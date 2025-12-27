@@ -1,0 +1,7 @@
+flask
+flask-cors
+opencv-python-headless
+numpy
+mediapipe
+python-telegram-bot
+gunicorn
