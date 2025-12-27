@@ -17,9 +17,9 @@ class RealAPI {
   async getStatus(): Promise<SystemStatus> {
     try {
       const [statusRes, earRes, alertRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/status`),
-        fetch(`${API_BASE_URL}/ear`),
-        fetch(`${API_BASE_URL}/alert`),
+        fetch(`${API_BASE_URL}status`),
+        fetch(`${API_BASE_URL}ear`),
+        fetch(`${API_BASE_URL}alert`),
       ]);
 
       const status = await statusRes.json();
@@ -54,7 +54,7 @@ class RealAPI {
 
   async getCurrentEAR(): Promise<number> {
     try {
-      const response = await fetch(`${API_BASE_URL}/ear`);
+      const response = await fetch(`${API_BASE_URL}ear`);
       const data = await response.json();
       return data.ear;
     } catch (error) {
@@ -65,7 +65,7 @@ class RealAPI {
 
   async getAlertState(): Promise<'normal' | 'warning' | 'critical'> {
     try {
-      const response = await fetch(`${API_BASE_URL}/alert`);
+      const response = await fetch(`${API_BASE_URL}alert`);
       const data = await response.json();
 
       if (data.drowsy) return 'critical';
@@ -79,7 +79,7 @@ class RealAPI {
 
   async getEvents(): Promise<AlertEvent[]> {
     try {
-      const response = await fetch(`${API_BASE_URL}/events`);
+      const response = await fetch(`${API_BASE_URL}events`);
       const data = await response.json();
 
       return data.events.map((event: any) => ({
@@ -98,7 +98,7 @@ class RealAPI {
   // NEW: Send frame to backend for detection
   async detectFrame(imageBlob: Blob): Promise<{ drowsy: boolean; confidence: number } | null> {
     try {
-      const response = await fetch(`${API_BASE_URL}/detect`, {
+      const response = await fetch(`${API_BASE_URL}detect`, {
         method: 'POST',
         body: imageBlob,
         headers: {
@@ -132,7 +132,7 @@ class RealAPI {
 
   async updateSettings(settings: Partial<SystemSettings>): Promise<SystemSettings> {
     try {
-      const response = await fetch(`${API_BASE_URL}/settings`, {
+      const response = await fetch(`${API_BASE_URL}settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

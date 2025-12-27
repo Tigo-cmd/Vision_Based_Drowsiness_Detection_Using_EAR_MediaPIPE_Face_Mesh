@@ -17,7 +17,16 @@ from mediapipe.tasks.python import vision
 app = Flask(__name__, static_folder='../static')
 
 # Optional: enable CORS if your frontend is served from a different origin
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
+
+app.url_map.strict_slashes = False
 
 # Telegram Configuration
 BOT_TOKEN = "8579934462:AAG7ItuNpjkuQ8lqflntPEUATZL4HdhYk5g"
