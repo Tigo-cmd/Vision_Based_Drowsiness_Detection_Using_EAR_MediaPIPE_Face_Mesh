@@ -1,6 +1,6 @@
 import { AlertEvent, SystemSettings, SystemStatus } from '../types';
 
-const API_BASE_URL = 'http://localhost:5000';
+const API_BASE_URL = 'https://drowsiness-five.vercel.app/';
 
 const STORAGE_KEYS = {
   SETTINGS: 'system_settings',
