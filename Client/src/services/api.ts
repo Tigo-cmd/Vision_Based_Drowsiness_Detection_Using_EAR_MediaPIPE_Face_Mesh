@@ -1,6 +1,6 @@
 import { AlertEvent, SystemSettings, SystemStatus } from '../types';
 
-const API_BASE_URL = 'https://figured-antonio-logged-rebel.trycloudflare.com/'
+const API_BASE_URL = 'https://vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh.fly.dev/'
 const STORAGE_KEYS = {
   SETTINGS: 'system_settings',
 };
