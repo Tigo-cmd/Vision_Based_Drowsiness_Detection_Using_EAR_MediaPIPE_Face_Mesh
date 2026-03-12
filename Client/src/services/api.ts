@@ -1,7 +1,6 @@
 import { AlertEvent, SystemSettings, SystemStatus } from '../types';
 
-const API_BASE_URL = 'https://web-production-1bd26.up.railway.app/';
-
+const API_BASE_URL = 'https://figured-antonio-logged-rebel.trycloudflare.com/'
 const STORAGE_KEYS = {
   SETTINGS: 'system_settings',
 };
