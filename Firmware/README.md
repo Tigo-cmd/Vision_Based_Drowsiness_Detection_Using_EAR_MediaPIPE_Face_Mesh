@@ -33,12 +33,20 @@ its next frame.
 
 | ESP32-CAM pin | Goes to |
 |---|---|
-| 5V | OLED VCC (or 3V3), buzzer + |
+| 3V3 | OLED VCC |
+| 5V | buzzer + |
 | GND | OLED GND, transistor emitter |
 | GPIO 15 | OLED SDA |
 | GPIO 14 | OLED SCL |
 | GPIO 13 | 1 kΩ → transistor base |
 | — | transistor collector → buzzer − |
+
+Power the OLED from 3V3, not 5V: most OLED modules pull SDA and SCL up to
+their own supply, and 5 V on those lines is too much for the ESP32's pins.
+
+If you use a 3-pin buzzer module (VCC, GND, I/O) instead of a bare buzzer and
+transistor, wire I/O straight to GPIO 13. If it beeps when it should be quiet,
+set `BUZZER_ACTIVE_HIGH` to 0 in `config.h`.
 
 GPIO 13/14/15 are the SD card pins, so don't put a card in. Leave GPIO 12
 alone: it's a boot pin and the board may not boot if something pulls it high.
