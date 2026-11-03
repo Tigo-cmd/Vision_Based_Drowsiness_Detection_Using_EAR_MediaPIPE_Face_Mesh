@@ -31,5 +31,13 @@
 // for real use a dim IR LED is kinder to the driver.
 #define USE_FLASH_LED 0
 
+// 1 = this board drives the OLED and buzzer itself.
+// 0 = a separate ESP32-C3 alert unit does (Firmware/c3_alert_unit).
+#define USE_LOCAL_ALERTS 1
+
+// Bluetooth setup PIN used when USE_LOCAL_ALERTS is 0 (no screen to show a
+// random one). Change it: anyone nearby who knows it can set the Wi-Fi.
+#define SETUP_PIN "changeme"
+
 // Buzzer driven through an NPN transistor: HIGH = on. Set to 0 if your module is active-low.
 #define BUZZER_ACTIVE_HIGH 1

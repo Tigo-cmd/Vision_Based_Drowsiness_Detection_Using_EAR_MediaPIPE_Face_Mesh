@@ -103,6 +103,63 @@ Over USB serial (115200) you can also type `wifi list`, `wifi clear` or `setup`.
 The bar along the bottom fills as the eyes stay closed and is full at the
 critical alert.
 
+## Two-board build: ESP32-C3 alert unit
+
+Instead of wiring the OLED and buzzer to the ESP32-CAM, you can put them on
+an ESP32-C3. The camera then only sends frames, which makes it less prone to
+brownouts and frees its pins. The C3 asks the server for the alert state
+four times a second, so the two boards need no wires between them.
+
+```
+ESP32-CAM ──frames──▶ server ◀──"what's the state?" every 250 ms── ESP32-C3
+                         │                                           ├── OLED
+                         └──▶ Telegram                               ├── buzzer
+                                                                     └── vibration motor (optional)
+```
+
+Because the C3 asks the server, it also notices when the camera stops
+sending. It shows `NO CAMERA` and chirps every 30 s until frames come back.
+
+**Wiring (ESP32-C3 SuperMini)**
+
+| C3 pin | Goes to |
+|---|---|
+| 3V3 | OLED VCC |
+| 5V | buzzer + (and motor +) |
+| GND | OLED GND, transistor emitters, button |
+| GPIO 8 | OLED SDA |
+| GPIO 9 | OLED SCL |
+| GPIO 4 | 1 kΩ → transistor base, collector → buzzer − |
+| GPIO 5 | 1 kΩ → second transistor → vibration motor − (optional; add a diode across the motor) |
+| GPIO 3 | push button to GND (optional) |
+
+The SuperMini's on-board LED shares GPIO 8 and will flicker with the OLED.
+That's harmless.
+
+**Setting up**
+
+1. Flash the ESP32-CAM with `USE_LOCAL_ALERTS 0` and your own `SETUP_PIN` in
+   its `config.h`. With no screen, its red LED on the back shows status: fast
+   blink = Bluetooth setup, on = sending frames, off = no link. Its
+   Bluetooth PIN is the `SETUP_PIN` you chose.
+2. Copy `c3_alert_unit/config.example.h` to `config.h`. Check the pins.
+3. Arduino IDE: Board **ESP32C3 Dev Module**, USB CDC On Boot **Enabled**,
+   Partition scheme **Huge APP (3MB No OTA)**. Upload `c3_alert_unit`.
+4. Set the C3's Wi-Fi the same way as the camera: it appears in the app as
+   `PROV_C3_…` with a PIN on its OLED. To re-enter setup, double-press RST or
+   hold the button while plugging it in.
+
+**The button.** A short press during `WARNING` or `WAKE UP` silences the
+buzzer and motor. The mute ends by itself once the eyes are open again, so
+the next drowsy episode alarms as normal.
+
+**C3 screens**, in addition to the ones above:
+
+| Screen | Meaning |
+|---|---|
+| `NO CAMERA` | server has had no frame for 5 s; monitoring is off |
+| `MUTED` (top right) | alarm silenced with the button |
+
 ## Things to know
 
 - **Latency.** Each frame goes over TLS to fly.dev and back, usually 300–800 ms.

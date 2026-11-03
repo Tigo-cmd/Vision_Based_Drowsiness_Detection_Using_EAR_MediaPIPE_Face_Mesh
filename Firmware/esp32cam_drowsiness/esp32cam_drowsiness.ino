@@ -49,6 +49,19 @@
 #endif
 #define DOUBLE_RESET_WINDOW_MS 4000
 
+// 1 = this board drives its own OLED and buzzer (single-board build).
+// 0 = a separate ESP32-C3 alert unit does that; this board only sends frames.
+#ifndef USE_LOCAL_ALERTS
+#define USE_LOCAL_ALERTS 1
+#endif
+// Bluetooth setup PIN when there's no OLED to show a random one.
+#ifndef SETUP_PIN
+#define SETUP_PIN "changeme"
+#endif
+// Small red LED on the back of the board, active low. Used for status when
+// there's no OLED: fast blink = Bluetooth setup, on = sending frames, off = no link.
+#define STATUS_LED_PIN 33
+
 // ---- AI-Thinker camera pins ----
 #define PWDN_GPIO_NUM 32
 #define RESET_GPIO_NUM -1
@@ -96,6 +109,7 @@ WiFiClientSecure tls;
 // ---------------------------------------------------------------------------
 
 void buzz(bool on) {
+  if (!USE_LOCAL_ALERTS) return;
   digitalWrite(BUZZER_PIN, (on == (bool)BUZZER_ACTIVE_HIGH) ? HIGH : LOW);
 }
 
@@ -344,7 +358,8 @@ void runSetupMode() {
   snprintf(name, sizeof(name), "PROV_%02X%02X%02X",  // the app lists devices named PROV_*
            (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
   provName = name;
-  provPin = String(10000000 + esp_random() % 90000000);  // fresh 8-digit PIN every time
+  // Fresh 8-digit PIN every time when it can be shown; otherwise the fixed one from config.h.
+  provPin = USE_LOCAL_ALERTS ? String(10000000 + esp_random() % 90000000) : String(SETUP_PIN);
 
   Serial.printf("[setup] Bluetooth setup: name %s, PIN %s\n", provName.c_str(), provPin.c_str());
   WiFi.onEvent(onProvEvent);
@@ -358,6 +373,7 @@ void runSetupMode() {
     unsigned long el = millis() - t0;
     drawSetupScreen(el < SETUP_MODE_TIMEOUT_MS ? SETUP_MODE_TIMEOUT_MS - el : 0);
     if (millis() - lastChirp > 5000) { chirpRequest = true; lastChirp = millis(); }
+    statusLed((millis() / 150) % 2);
     if (provSaved && !savedAt) savedAt = millis();
     // Give the app a moment to receive "success" before rebooting.
     if ((savedAt && millis() - savedAt > 3000) || (provSaved && provEnded)) break;
@@ -418,7 +434,13 @@ void handleSerial() {
   }
 }
 
+void statusLed(bool on) {
+  if (USE_LOCAL_ALERTS) return;
+  digitalWrite(STATUS_LED_PIN, on ? LOW : HIGH);
+}
+
 void initOled() {
+  if (!USE_LOCAL_ALERTS) return;
   // Camera uses its own I2C port for SCCB, so Wire (port 0) is free for the OLED.
   Wire.begin(OLED_SDA, OLED_SCL);
   oledOk = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -427,7 +449,9 @@ void initOled() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(BUZZER_PIN, OUTPUT);
+  if (USE_LOCAL_ALERTS) pinMode(BUZZER_PIN, OUTPUT);
+  else pinMode(STATUS_LED_PIN, OUTPUT);
+  statusLed(false);
   buzz(false);
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
@@ -502,6 +526,7 @@ void loop() {
     chirpRequest = true;
   }
 
+  statusLed(!linkDown);
   drawScreen();
   delay(10);
 }

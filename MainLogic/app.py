@@ -232,6 +232,10 @@ def get_alert():
         "threshold": state.threshold,
         "frame": state.processed_frames,
         "source": state.last_source,
+        # Seconds since the last frame from any camera; None if none yet.
+        # Lets an alert-only unit (e.g. the ESP32-C3) spot a dead camera.
+        "last_frame_age": (round(time.time() - state.last_frame_time, 1)
+                           if state.last_frame_time else None),
     })
 
 
