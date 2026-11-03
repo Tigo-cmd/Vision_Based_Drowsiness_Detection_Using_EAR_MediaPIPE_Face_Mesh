@@ -47,10 +47,38 @@ alone: it's a boot pin and the board may not boot if something pulls it high.
 
 1. Arduino IDE → Boards Manager → install **esp32 by Espressif** (2.0.x or 3.x).
 2. Library Manager → install **Adafruit SSD1306**, **Adafruit GFX Library**, **ArduinoJson** (v7).
-3. Copy `esp32cam_drowsiness/config.example.h` to `config.h` and fill in Wi-Fi and `DEVICE_ID`.
-4. Tools → Board: **AI Thinker ESP32-CAM**, Partition scheme: **Huge APP**, PSRAM: **Enabled**.
+3. Copy `esp32cam_drowsiness/config.example.h` to `config.h` and set `DEVICE_ID`. Wi-Fi can stay empty; you'll set it over Bluetooth.
+4. Tools → Board: **AI Thinker ESP32-CAM**, Partition scheme: **Huge APP (3MB No OTA)**, PSRAM: **Enabled**. Bluetooth makes the firmware too big for the default partition.
 5. Upload. With an FTDI adapter, hold GPIO 0 to GND while resetting to enter flash mode, then remove it and reset again to run.
 6. Open Serial Monitor at 115200 to see Wi-Fi and HTTP status.
+
+## Setting or changing Wi-Fi over Bluetooth
+
+No laptop or reflashing needed. Install **ESP BLE Provisioning** (Espressif,
+free, Android and iOS).
+
+1. Put the unit in setup mode: **press RST twice within 4 seconds**. It also
+   goes into setup on its own the first time, or when none of its saved
+   networks can be reached.
+2. The OLED shows `BLUETOOTH SETUP`, a name like `PROV_A1B2C3` and an 8-digit
+   PIN. The buzzer double-chirps every few seconds while it's in setup.
+3. In the app: Provision New Device → *I don't have a QR code* → pick the
+   `PROV_…` name → enter the PIN → choose your network and type the password.
+4. The unit tries the network before saving it. A wrong password shows in the
+   app and on the OLED and isn't saved, so you can try again.
+5. On success it restarts and starts monitoring.
+
+It remembers **3 networks** (say, phone hotspot, home and work) and tries the
+most recently added first. Re-adding a network with a new password replaces
+the old one. Setup mode gives up after 5 minutes and goes back to trying the
+saved networks, so a hotspot switched on after the car starts still gets
+picked up.
+
+Bluetooth is only on in setup mode. In normal mode it's switched off and its
+memory goes to the camera and TLS, and nobody can change the Wi-Fi while
+you're driving.
+
+Over USB serial (115200) you can also type `wifi list`, `wifi clear` or `setup`.
 
 ## What the OLED shows
 
@@ -62,6 +90,7 @@ alone: it's a boot pin and the board may not boot if something pulls it high.
 | `NO FACE` | camera can't see a face; check angle and lighting |
 | `NO SERVER` | no answer from the backend for 6 s; two short chirps when it happens |
 | `NO WIFI` | not connected |
+| `BLUETOOTH SETUP` | waiting for the phone app; not monitoring |
 
 The bar along the bottom fills as the eyes stay closed and is full at the
 critical alert.

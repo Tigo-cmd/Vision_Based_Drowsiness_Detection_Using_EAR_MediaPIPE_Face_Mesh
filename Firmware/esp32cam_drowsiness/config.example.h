@@ -1,8 +1,16 @@
 // Copy this file to config.h and fill it in. config.h is gitignored.
 #pragma once
 
-#define WIFI_SSID "your-wifi"
-#define WIFI_PASS "your-password"
+// Optional first-boot network. Leave empty and set Wi-Fi over Bluetooth instead
+// (see Firmware/README.md). Once anything is saved on the device, these are ignored.
+#define WIFI_SSID ""
+#define WIFI_PASS ""
+
+// How long to try each saved network at boot before moving on.
+#define WIFI_CONNECT_TIMEOUT_MS 12000
+
+// Bluetooth setup mode gives up after this and retries the saved networks.
+#define SETUP_MODE_TIMEOUT_MS 300000
 
 // Same backend the dashboard uses. Must end in /detect.
 #define API_URL "https://vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh.fly.dev/detect"

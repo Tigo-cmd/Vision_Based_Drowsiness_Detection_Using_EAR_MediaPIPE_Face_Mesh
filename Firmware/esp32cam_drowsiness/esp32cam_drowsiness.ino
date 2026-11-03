@@ -18,8 +18,36 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFiProv.h>
+#include "esp_bt.h"
 
 #include "config.h"
+#include "wifi_store.h"
+
+// arduino-esp32 3.x renamed the provisioning constants.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#define PROV_SCHEME_BLE NETWORK_PROV_SCHEME_BLE
+#define PROV_FREE_BTDM NETWORK_PROV_SCHEME_HANDLER_FREE_BTDM
+#define PROV_SECURITY_1 NETWORK_PROV_SECURITY_1
+#else
+#define PROV_SCHEME_BLE WIFI_PROV_SCHEME_BLE
+#define PROV_FREE_BTDM WIFI_PROV_SCHEME_HANDLER_FREE_BTDM
+#define PROV_SECURITY_1 WIFI_PROV_SECURITY_1
+#endif
+
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS ""
+#endif
+#ifndef WIFI_CONNECT_TIMEOUT_MS
+#define WIFI_CONNECT_TIMEOUT_MS 12000
+#endif
+#ifndef SETUP_MODE_TIMEOUT_MS
+#define SETUP_MODE_TIMEOUT_MS 300000
+#endif
+#define DOUBLE_RESET_WINDOW_MS 4000
 
 // ---- AI-Thinker camera pins ----
 #define PWDN_GPIO_NUM 32
@@ -236,47 +264,230 @@ void captureAndSend() {
   http.end();
 }
 
+// ---------------------------------------------------------------------------
+// Bluetooth setup mode
+//
+// Uses Espressif's standard BLE provisioning, so the free "ESP BLE Provisioning"
+// app (Android / iOS) works with no custom app. The link is encrypted
+// (Security 1) and the app needs the PIN shown on the OLED, so a passer-by
+// can't push their own network onto the device.
+//
+// Setup mode runs in its own boot: the camera is not started, and after a
+// network is saved the board restarts. Bluetooth is never on while monitoring.
+// ---------------------------------------------------------------------------
+
+String provName, provPin;
+String pendingSsid, pendingPass;
+volatile bool provSaved = false, provFailed = false, provEnded = false;
+
+void drawSetupScreen(unsigned long msLeft) {
+  if (!oledOk) return;
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("BLUETOOTH SETUP");
+  oled.drawFastHLine(0, 10, OLED_W, SSD1306_WHITE);
+  oled.setCursor(0, 14);
+  oled.print(provName);
+  oled.setCursor(0, 26);
+  oled.print("PIN");
+  oled.setTextSize(2);
+  oled.setCursor(24, 23);
+  oled.print(provPin);
+  oled.setTextSize(1);
+  oled.setCursor(0, 44);
+  if (provFailed) oled.print("Wrong password? Retry");
+  else if (provSaved) oled.print("Saved. Restarting...");
+  else oled.print("App: ESP BLE Prov");
+  oled.setCursor(0, 55);
+  oled.printf("Exits in %lus", msLeft / 1000);
+  oled.display();
+}
+
+void onProvEvent(arduino_event_t *e) {
+  switch (e->event_id) {
+    case ARDUINO_EVENT_PROV_CRED_RECV: {
+      // Hold on to these until the board has actually joined the network.
+      // ssid/password are fixed-size arrays and not null-terminated when full.
+      char ssid[33] = {0}, pass[65] = {0};
+      memcpy(ssid, e->event_info.prov_cred_recv.ssid, 32);
+      memcpy(pass, e->event_info.prov_cred_recv.password, 64);
+      pendingSsid = ssid;
+      pendingPass = pass;
+      provFailed = false;
+      Serial.printf("[setup] got credentials for \"%s\"\n", pendingSsid.c_str());
+      break;
+    }
+    case ARDUINO_EVENT_PROV_CRED_FAIL:
+      // The app is told too, and the user can resend. Nothing is saved.
+      provFailed = true;
+      Serial.println("[setup] could not join, wrong password or out of range");
+      break;
+    case ARDUINO_EVENT_PROV_CRED_SUCCESS:
+      wifistore::add(pendingSsid, pendingPass);
+      provSaved = true;
+      Serial.println("[setup] joined, network saved");
+      break;
+    case ARDUINO_EVENT_PROV_END:
+      provEnded = true;
+      break;
+    default:
+      break;
+  }
+}
+
+void runSetupMode() {
+  wifistore::disarmDoubleReset();  // so a reset from here is a normal boot
+  uint64_t mac = ESP.getEfuseMac();
+  char name[16];
+  snprintf(name, sizeof(name), "PROV_%02X%02X%02X",  // the app lists devices named PROV_*
+           (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  provName = name;
+  provPin = String(10000000 + esp_random() % 90000000);  // fresh 8-digit PIN every time
+
+  Serial.printf("[setup] Bluetooth setup: name %s, PIN %s\n", provName.c_str(), provPin.c_str());
+  WiFi.onEvent(onProvEvent);
+  // reset_provisioned=true: we keep our own list, so start the driver from clean.
+  WiFiProv.beginProvision(PROV_SCHEME_BLE, PROV_FREE_BTDM, PROV_SECURITY_1,
+                          provPin.c_str(), provName.c_str(), nullptr, nullptr, true);
+
+  // Slow double chirp every few seconds so it's obvious the unit isn't monitoring.
+  unsigned long t0 = millis(), lastChirp = 0, savedAt = 0;
+  while (true) {
+    unsigned long el = millis() - t0;
+    drawSetupScreen(el < SETUP_MODE_TIMEOUT_MS ? SETUP_MODE_TIMEOUT_MS - el : 0);
+    if (millis() - lastChirp > 5000) { chirpRequest = true; lastChirp = millis(); }
+    if (provSaved && !savedAt) savedAt = millis();
+    // Give the app a moment to receive "success" before rebooting.
+    if ((savedAt && millis() - savedAt > 3000) || (provSaved && provEnded)) break;
+    if (el > SETUP_MODE_TIMEOUT_MS) {
+      Serial.println("[setup] timed out");
+      break;
+    }
+    delay(200);
+  }
+  delay(500);
+  ESP.restart();
+}
+
+// Try saved networks, most recently added first.
+bool connectSavedWifi() {
+  WifiCred list[WIFI_STORE_MAX];
+  int n = wifistore::load(list);
+  WiFi.persistent(false);  // our list in NVS is the source of truth
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);    // lower latency
+  for (int i = 0; i < n; i++) {
+    Serial.printf("[wifi] trying \"%s\"\n", list[i].ssid.c_str());
+    WiFi.begin(list[i].ssid.c_str(), list[i].pass.c_str());
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_TIMEOUT_MS) {
+      drawScreen();
+      delay(250);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[wifi] connected to \"%s\", %s\n", list[i].ssid.c_str(),
+                    WiFi.localIP().toString().c_str());
+      WiFi.setAutoReconnect(true);
+      return true;
+    }
+    WiFi.disconnect();
+  }
+  return false;
+}
+
+// Serial commands for the bench: "wifi list", "wifi clear", "setup".
+void handleSerial() {
+  if (!Serial.available()) return;
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  if (cmd == "wifi list") {
+    WifiCred list[WIFI_STORE_MAX];
+    int n = wifistore::load(list);
+    Serial.printf("%d saved network(s)\n", n);
+    for (int i = 0; i < n; i++) Serial.printf("  %d: %s\n", i, list[i].ssid.c_str());
+  } else if (cmd == "wifi clear") {
+    wifistore::clear();
+    Serial.println("Saved networks cleared. Restarting into setup.");
+    delay(200);
+    ESP.restart();
+  } else if (cmd == "setup") {
+    Preferences p; p.begin("boot", false); p.putBool("armed", true); p.end();
+    ESP.restart();
+  }
+}
+
+void initOled() {
+  // Camera uses its own I2C port for SCCB, so Wire (port 0) is free for the OLED.
+  Wire.begin(OLED_SDA, OLED_SCL);
+  oledOk = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  if (!oledOk) Serial.println("[oled] not found at 0x3C, continuing without display");
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(BUZZER_PIN, OUTPUT);
   buzz(false);
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, USE_FLASH_LED ? HIGH : LOW);
+  digitalWrite(FLASH_LED_PIN, LOW);
+  xTaskCreatePinnedToCore(buzzerTask, "buzzer", 2048, nullptr, 1, nullptr, 0);
+
+  // Credentials from config.h are only a first-boot default; after that, use Bluetooth.
+  WifiCred tmp[WIFI_STORE_MAX];
+  int saved = wifistore::load(tmp);
+  if (saved == 0 && strlen(WIFI_SSID) > 0) {
+    wifistore::add(WIFI_SSID, WIFI_PASS);
+    saved = 1;
+  }
+
+  bool doubleReset = wifistore::checkDoubleReset();
+  if (!doubleReset) {
+    // Close the double-reset window after a few seconds, whatever setup is doing.
+    xTaskCreate([](void *) {
+      vTaskDelay(pdMS_TO_TICKS(DOUBLE_RESET_WINDOW_MS));
+      wifistore::disarmDoubleReset();
+      vTaskDelete(nullptr);
+    }, "drd", 3072, nullptr, 1, nullptr);
+  }
+  if (doubleReset || saved == 0) {
+    initOled();
+    Serial.println(doubleReset ? "[boot] double reset, entering setup" : "[boot] no saved Wi-Fi, entering setup");
+    runSetupMode();
+  }
+
+  // Normal boot: Bluetooth won't be used, so hand its RAM (~60 KB) back to the
+  // heap for the camera and TLS.
+  esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
 
   if (!initCamera()) {
     Serial.println("[cam] init failed, restarting");
     delay(2000);
     ESP.restart();
   }
-
-  // Camera uses its own I2C port for SCCB, so Wire (port 0) is free for the OLED.
-  Wire.begin(OLED_SDA, OLED_SCL);
-  oledOk = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  if (!oledOk) Serial.println("[oled] not found at 0x3C, continuing without display");
-
-  xTaskCreatePinnedToCore(buzzerTask, "buzzer", 2048, nullptr, 1, nullptr, 0);
+  initOled();
+  digitalWrite(FLASH_LED_PIN, USE_FLASH_LED ? HIGH : LOW);
 
   // fly.dev uses a public CA. setInsecure() skips certificate checks to keep setup
   // simple; pin the root CA with tls.setCACert() if the link matters to you.
   tls.setInsecure();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // lower latency
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  WiFi.setAutoReconnect(true);
-
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
-    drawScreen();
-    delay(250);
+  if (!connectSavedWifi()) {
+    // None of the saved networks are around. Restart into Bluetooth setup (a
+    // clean boot, since Bluetooth RAM was released above). If nobody uses it,
+    // setup times out and the board tries the saved networks again, which
+    // covers a phone hotspot switched on after the car starts.
+    Serial.println("[wifi] no saved network reachable, restarting into setup");
+    Preferences p; p.begin("boot", false); p.putBool("armed", true); p.end();
+    delay(200);
+    ESP.restart();
   }
-  Serial.printf("[wifi] %s %s\n", WiFi.status() == WL_CONNECTED ? "connected" : "not connected",
-                WiFi.localIP().toString().c_str());
   chirpRequest = true;  // audible "I'm alive"
 }
 
 void loop() {
   unsigned long now = millis();
+  handleSerial();
 
   if (WiFi.status() == WL_CONNECTED && now - lastShotMs >= FRAME_INTERVAL_MS) {
     lastShotMs = now;
