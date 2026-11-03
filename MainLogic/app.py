@@ -54,6 +54,9 @@ class AppState:
         self.consecutive_frames = 0
         self.level = "normal"  # normal | warning | critical
         self.face_detected = False
+        # Frames fully analysed, so a logger can tell one frame from the next.
+        self.processed_frames = 0
+        self.last_source = None
         self.events = deque(maxlen=100)
         self.start_time = time.time()
 
@@ -225,6 +228,10 @@ def get_alert():
         "drowsy_time": state.drowsy_time_sec,
         "consecutive_frames": state.consecutive_frames,
         "face": state.face_detected,
+        "ear": round(state.current_ear, 3),
+        "threshold": state.threshold,
+        "frame": state.processed_frames,
+        "source": state.last_source,
     })
 
 
@@ -302,6 +309,7 @@ def latest_frame():
 
 def update_alert_state(eyes_closed, now):
     """Time-based state machine, so it behaves the same at 2 FPS (browser) or 3 FPS (ESP32)."""
+    state.processed_frames += 1
     if now - state.last_frame_time > FRAME_GAP_RESET_SEC:
         state.closed_since = None
         state.consecutive_frames = 0
@@ -348,9 +356,11 @@ def detect():
             result = landmarker.detect(mp_image)
 
         with state.lock:
+            state.last_source = device_id
             if not result.face_landmarks:
                 # No face: treat like eyes open for timing, but tell the client.
                 state.face_detected = False
+                state.current_ear = 0.0
                 update_alert_state(False, now)
                 return jsonify({
                     "error": "no face detected",
