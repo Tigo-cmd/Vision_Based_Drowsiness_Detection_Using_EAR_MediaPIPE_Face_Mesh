@@ -1,4 +1,4 @@
-import { AlertEvent, SystemSettings, SystemStatus } from '../types';
+import { AlertEvent, DeviceInfo, SystemSettings, SystemStatus } from '../types';
 
 const API_BASE_URL = 'https://vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh.fly.dev/'
 const STORAGE_KEYS = {
@@ -25,16 +25,24 @@ class RealAPI {
       const ear = await earRes.json();
       const alert = await alertRes.json();
 
-      let alertState: 'normal' | 'warning' | 'critical' = 'normal';
-      if (alert.drowsy) {
-        alertState = 'critical';
-      } else if (alert.consecutive_frames >= 4) { // Increased to 4 frames (~2s) for better accuracy
-        alertState = 'warning';
-      }
+      // The backend decides the level from how long the eyes have been closed.
+      const alertState: 'normal' | 'warning' | 'critical' =
+        alert.level ?? (alert.drowsy ? 'critical' : 'normal');
+
+      const devices: DeviceInfo[] = (status.devices ?? []).map((d: any) => ({
+        id: d.id,
+        lastSeenSec: d.last_seen_sec,
+        frames: d.frames,
+        online: d.online,
+      }));
 
       return {
         cameraActive: status.camera === 'connected',
         telegramConnected: status.telegram === 'configured',
+        telegramState: status.telegram,
+        telegramError: status.telegram_last_error ?? null,
+        devices,
+        closedFor: alert.closed_for ?? 0,
         currentEAR: ear.ear,
         alertState,
         lastUpdate: new Date().toISOString(),
@@ -42,8 +50,12 @@ class RealAPI {
     } catch (error) {
       console.error('API Error:', error);
       return {
-        cameraActive: true,
+        cameraActive: false,
         telegramConnected: false,
+        telegramState: 'error',
+        telegramError: 'Backend unreachable',
+        devices: [],
+        closedFor: 0,
         currentEAR: 0,
         alertState: 'normal',
         lastUpdate: new Date().toISOString(),
@@ -67,9 +79,7 @@ class RealAPI {
       const response = await fetch(`${API_BASE_URL}alert`);
       const data = await response.json();
 
-      if (data.drowsy) return 'critical';
-      if (data.consecutive_frames >= 4) return 'warning';
-      return 'normal';
+      return data.level ?? (data.drowsy ? 'critical' : 'normal');
     } catch (error) {
       console.error('Alert API Error:', error);
       return 'normal';
@@ -82,11 +92,12 @@ class RealAPI {
       const data = await response.json();
 
       return data.events.map((event: any) => ({
-        id: crypto.randomUUID(),
+        // Stable key so the list doesn't remount every poll
+        id: `${event.timestamp}-${event.source ?? ''}`,
         earValue: event.ear,
         alertType: event.type || (event.alert_sent ? 'critical' : 'warning'),
         timestamp: event.timestamp,
-        duration: 0,
+        duration: event.duration ?? 0,
       }));
     } catch (error) {
       console.error('Events API Error:', error);
@@ -102,6 +113,7 @@ class RealAPI {
         body: imageBlob,
         headers: {
           'Content-Type': 'application/octet-stream',
+          'X-Device-Id': 'browser',
         },
       });
 
@@ -138,6 +150,7 @@ class RealAPI {
           ear_threshold: settings.earThreshold,
           drowsy_time: settings.alertDurationThreshold,
           telegram_cooldown: settings.notificationCooldown,
+          telegram_enabled: settings.telegramEnabled,
         }),
       });
 
@@ -159,7 +172,20 @@ class RealAPI {
   }
 
   async clearEvents(): Promise<void> {
-    console.log('Clear events not implemented in backend');
+    try {
+      await fetch(`${API_BASE_URL}events`, { method: 'DELETE' });
+    } catch (error) {
+      console.error('Clear events error:', error);
+    }
+  }
+
+  async sendTelegramTest(): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const response = await fetch(`${API_BASE_URL}telegram/test`, { method: 'POST' });
+      return await response.json();
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   startSimulation() {

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+# ESP32 secrets (copy config.example.h -> config.h)
+Firmware/**/config.h

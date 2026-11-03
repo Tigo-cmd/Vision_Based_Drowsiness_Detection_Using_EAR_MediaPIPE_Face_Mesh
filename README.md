@@ -9,8 +9,8 @@ A high-performance, real-time safety system that monitors driver alertness using
 *   **Real-time Eye Tracking**: Uses MediaPipe and EAR (Eye Aspect Ratio) calculation for high-precision drowsiness detection.
 *   **Stable Live Feed**: Optimized React-based vision system with manual Start/Stop controls.
 *   **Intelligent Alerting**:
-    *   **Warning State**: Triggered after ~2 seconds of sustained drowsiness (Visual amber glow).
-    *   **Critical Alert**: Triggered after ~6 seconds of sustained drowsiness (Visual red pulse + alarming).
+    *   **Warning State**: eyes closed for half the alert duration (default 1.5 s).
+    *   **Critical Alert**: eyes closed for the full alert duration (default 3 s). Timing is measured in seconds on the server, so it's the same at any frame rate.
 *   **Telegram Integration**: Automated alerts sent to `@EARdrowsines_alert` including JPEG snapshots of the driver and precise timestamps.
 *   **Modern Analytics Dashboard**: Real-time graphs for EAR value, system health status, and a detailed event log.
 *   **Customizable Thresholds**: Adjustable EAR sensitivity and notification cooldowns via the settings panel.
@@ -34,7 +34,9 @@ A high-performance, real-time safety system that monitors driver alertness using
 cd MainLogic
 pip install -r requirements.txt --break-system-packages
 # Ensure face_landmarker.task is in the MainLogic folder
-python Drowniness_detect.py
+export TELEGRAM_BOT_TOKEN=<token from @BotFather>
+export TELEGRAM_CHAT_ID=@EARdrowsines_alert
+python app.py
 ```
 
 ### 3. Frontend Setup
@@ -47,9 +49,29 @@ npm run dev
 ## ⚙️ Configuration
 
 ### Telegram Bot
-The system is pre-configured to send alerts to the `@EARdrowsines_alert` channel. To use your own bot:
-1. Update `BOT_TOKEN` and `CHAT_ID` in `MainLogic/Drowniness_detect.py`.
-2. Ensure your bot has permission to post to the specified channel.
+The bot token is read from the environment, not from the code:
+
+| Variable | Example |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | `123456:ABC...` from @BotFather |
+| `TELEGRAM_CHAT_ID` | `@EARdrowsines_alert` (default) |
+
+On fly.io:
+```bash
+fly secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=@EARdrowsines_alert
+```
+
+The bot must be an admin of the channel. To check it works, press **Send test**
+under System Health on the dashboard, or:
+```bash
+curl -X POST https://<your-app>.fly.dev/telegram/test
+```
+`GET /status` reports `telegram` as `configured`, `not_configured`, `disabled`
+or `error` (with `telegram_last_error`), based on what actually happened.
+
+### ESP32-CAM hardware unit
+See [Firmware/README.md](Firmware/README.md) for an in-car unit with an OLED
+and buzzer that uses the same backend and thresholds.
 
 ### Accuracy Tuning
 - **EAR Threshold**: Default is set to `0.20`. Lower values make the system less sensitive (requiring more eye closure).
@@ -64,9 +86,10 @@ The system is pre-configured to send alerts to the `@EARdrowsines_alert` channel
 │   │   ├── services/       # API Integration
 │   │   └── types/          # TypeScript Definitions
 ├── MainLogic/              # Python Backend (Flask)
-│   ├── Drowniness_detect.py # Core logic and API
+│   ├── app.py               # Core logic and API
 │   ├── face_landmarker.task # MediaPipe model file
 │   └── requirements.txt     # Backend dependencies
+├── Firmware/               # ESP32-CAM + OLED + buzzer unit
 └── vercel.json             # Deployment configuration
 ```
 

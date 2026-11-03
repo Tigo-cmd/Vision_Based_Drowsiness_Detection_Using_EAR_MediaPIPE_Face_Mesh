@@ -1,14 +1,39 @@
-import { Activity, CheckCircle, Send, Video, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { Activity, CheckCircle, Cpu, Send, Video, XCircle } from 'lucide-react';
+import { DeviceInfo, TelegramState } from '../types';
+import { api } from '../services/api';
 
 interface SystemHealthProps {
   cameraActive: boolean;
-  telegramConnected: boolean;
+  telegramState: TelegramState;
+  telegramError: string | null;
+  devices: DeviceInfo[];
   lastUpdate: string;
 }
 
-export function SystemHealth({ cameraActive, telegramConnected, lastUpdate }: SystemHealthProps) {
+const TELEGRAM_LABELS: Record<TelegramState, string> = {
+  configured: 'Ready',
+  not_configured: 'Token not set on server',
+  disabled: 'Turned off in settings',
+  error: 'Last send failed',
+};
+
+export function SystemHealth({ cameraActive, telegramState, telegramError, devices, lastUpdate }: SystemHealthProps) {
   const timeSinceUpdate = Date.now() - new Date(lastUpdate).getTime();
   const isHealthy = timeSinceUpdate < 5000;
+  const telegramOk = telegramState === 'configured';
+  const hardware = devices.filter((d) => d.id !== 'browser');
+
+  const [testState, setTestState] = useState<'idle' | 'sending' | 'ok' | 'failed'>('idle');
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const runTelegramTest = async () => {
+    setTestState('sending');
+    setTestError(null);
+    const res = await api.sendTelegramTest();
+    setTestState(res.ok ? 'ok' : 'failed');
+    if (!res.ok) setTestError(res.error ?? 'Unknown error');
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-lg overflow-hidden">
@@ -30,7 +55,7 @@ export function SystemHealth({ cameraActive, telegramConnected, lastUpdate }: Sy
             <Video size={20} className={cameraActive ? 'text-emerald-600' : 'text-gray-400'} />
             <div>
               <p className="text-sm font-medium text-gray-700">Camera Feed</p>
-              <p className="text-xs text-gray-500">Video input device</p>
+              <p className="text-xs text-gray-500">{cameraActive ? 'Frames arriving' : 'No frames in the last 5s'}</p>
             </div>
           </div>
           {cameraActive ? (
@@ -40,15 +65,47 @@ export function SystemHealth({ cameraActive, telegramConnected, lastUpdate }: Sy
           )}
         </div>
 
+        <div className="p-4 bg-gray-50 rounded-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Send size={20} className={telegramOk ? 'text-emerald-600' : 'text-gray-400'} />
+              <div>
+                <p className="text-sm font-medium text-gray-700">Telegram Bot</p>
+                <p className={`text-xs ${telegramState === 'error' ? 'text-red-600' : 'text-gray-500'}`}>
+                  {TELEGRAM_LABELS[telegramState] ?? telegramState}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={runTelegramTest}
+              disabled={testState === 'sending' || telegramState === 'not_configured'}
+              className="text-xs font-medium px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-white disabled:opacity-50"
+            >
+              {testState === 'sending' ? 'Sending…' : 'Send test'}
+            </button>
+          </div>
+          {testState === 'ok' && <p className="text-xs text-emerald-700 mt-2">Test message delivered.</p>}
+          {testState === 'failed' && <p className="text-xs text-red-600 mt-2 break-words">{testError}</p>}
+          {testState === 'idle' && telegramState === 'error' && telegramError && (
+            <p className="text-xs text-red-600 mt-2 break-words">{telegramError}</p>
+          )}
+        </div>
+
         <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
           <div className="flex items-center gap-3">
-            <Send size={20} className={telegramConnected ? 'text-emerald-600' : 'text-gray-400'} />
+            <Cpu size={20} className={hardware.some((d) => d.online) ? 'text-emerald-600' : 'text-gray-400'} />
             <div>
-              <p className="text-sm font-medium text-gray-700">Telegram Bot</p>
-              <p className="text-xs text-gray-500">Notification service</p>
+              <p className="text-sm font-medium text-gray-700">ESP32-CAM</p>
+              <p className="text-xs text-gray-500">
+                {hardware.length === 0
+                  ? 'No device has connected yet'
+                  : hardware
+                      .map((d) => `${d.id}: ${d.online ? 'online' : `last seen ${Math.round(d.lastSeenSec)}s ago`}`)
+                      .join(' · ')}
+              </p>
             </div>
           </div>
-          {telegramConnected ? (
+          {hardware.some((d) => d.online) ? (
             <CheckCircle size={20} className="text-emerald-600" />
           ) : (
             <XCircle size={20} className="text-gray-400" />

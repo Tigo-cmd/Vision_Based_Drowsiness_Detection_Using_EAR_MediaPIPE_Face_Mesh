@@ -1,0 +1,27 @@
+// Copy this file to config.h and fill it in. config.h is gitignored.
+#pragma once
+
+#define WIFI_SSID "your-wifi"
+#define WIFI_PASS "your-password"
+
+// Same backend the dashboard uses. Must end in /detect.
+#define API_URL "https://vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh.fly.dev/detect"
+
+// Shown in the dashboard, Telegram captions and the event log.
+#define DEVICE_ID "esp32cam-01"
+
+// Time between frames. 350-500 ms is realistic over TLS to fly.dev.
+#define FRAME_INTERVAL_MS 400
+
+// If the server hasn't answered for this long, the OLED shows NO SERVER.
+#define LINK_TIMEOUT_MS 6000
+
+// fly.dev cold starts can take several seconds.
+#define HTTP_TIMEOUT_MS 8000
+
+// Turn the on-board flash LED (GPIO 4) on for night driving. It is very bright;
+// for real use a dim IR LED is kinder to the driver.
+#define USE_FLASH_LED 0
+
+// Buzzer driven through an NPN transistor: HIGH = on. Set to 0 if your module is active-low.
+#define BUZZER_ACTIVE_HIGH 1

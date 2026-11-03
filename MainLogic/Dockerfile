@@ -16,9 +16,11 @@ FROM python:3.12.13-slim
 
 WORKDIR /app
 
-# Install system dependencies for OpenCV
+# System libs for OpenCV; libegl1/libgles2 are needed by newer MediaPipe wheels
 RUN apt-get update && apt-get install -y \
     libgl1 \
+    libegl1 \
+    libgles2 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \

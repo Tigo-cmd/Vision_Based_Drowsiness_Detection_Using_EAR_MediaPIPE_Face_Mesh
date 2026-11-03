@@ -13,6 +13,10 @@ function App() {
   const [status, setStatus] = useState<SystemStatus>({
     cameraActive: false,
     telegramConnected: false,
+    telegramState: 'not_configured',
+    telegramError: null,
+    devices: [],
+    closedFor: 0,
     currentEAR: 0,
     alertState: 'normal',
     lastUpdate: new Date().toISOString(),
@@ -118,7 +122,9 @@ function App() {
           <div className="space-y-6">
             <SystemHealth
               cameraActive={status.cameraActive}
-              telegramConnected={status.telegramConnected}
+              telegramState={status.telegramState}
+              telegramError={status.telegramError}
+              devices={status.devices}
               lastUpdate={status.lastUpdate}
             />
             {showSettings && (
