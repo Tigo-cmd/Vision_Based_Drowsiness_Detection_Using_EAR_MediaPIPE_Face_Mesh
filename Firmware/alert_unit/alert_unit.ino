@@ -1,14 +1,19 @@
 /*
-  ESP32-C3 alert unit
+  Alert unit (ESP32-C3, or an ESP32-CAM board with no camera fitted)
 
-  The ESP32-CAM only captures frames and sends them to the server. This board
+  The camera board only captures frames and sends them to the server. This board
   asks the server for the alert state a few times a second and drives the
   OLED, the buzzer and an optional vibration motor from it.
 
   Because it asks the server rather than the camera, it also notices when the
   camera stops sending and warns that monitoring is off.
 
-  Board: ESP32-C3 SuperMini (any ESP32-C3 works; adjust pins in config.h).
+  Board: pick "ESP32C3 Dev Module" for a C3, or "AI Thinker ESP32-CAM" for an
+  ESP32-CAM board. The right pins are chosen from that in config.h.
+
+  Bench test without the server: type "demo" in the Serial Monitor (115200).
+  The unit runs ALERT -> WARNING -> WAKE UP -> ALERT so you can check the
+  OLED, buzzer and motor wiring.
   Libraries: Adafruit SSD1306, Adafruit GFX, ArduinoJson (v7).
   Setup and wiring: see Firmware/README.md.
 */
@@ -26,18 +31,34 @@
 #include "config.h"
 #include "wifi_store.h"
 
-// The C3 has Bluetooth LE only. arduino-esp32 3.x renamed the constants.
+// arduino-esp32 3.x renamed the provisioning constants.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #define PROV_SCHEME_BLE NETWORK_PROV_SCHEME_BLE
-#define PROV_FREE_BLE NETWORK_PROV_SCHEME_HANDLER_FREE_BLE
 #define PROV_SECURITY_1 NETWORK_PROV_SECURITY_1
+#define PROV_FREE_BLE_ONLY NETWORK_PROV_SCHEME_HANDLER_FREE_BLE
+#define PROV_FREE_BTDM NETWORK_PROV_SCHEME_HANDLER_FREE_BTDM
 #else
 #define PROV_SCHEME_BLE WIFI_PROV_SCHEME_BLE
-#define PROV_FREE_BLE WIFI_PROV_SCHEME_HANDLER_FREE_BLE
 #define PROV_SECURITY_1 WIFI_PROV_SECURITY_1
+#define PROV_FREE_BLE_ONLY WIFI_PROV_SCHEME_HANDLER_FREE_BLE
+#define PROV_FREE_BTDM WIFI_PROV_SCHEME_HANDLER_FREE_BTDM
+#endif
+
+// The C3 has Bluetooth LE only; the classic ESP32 has LE + Classic (BTDM).
+#if CONFIG_IDF_TARGET_ESP32C3
+#define PROV_FREE PROV_FREE_BLE_ONLY
+#define BT_RELEASE_MODE ESP_BT_MODE_BLE
+#else
+#define PROV_FREE PROV_FREE_BTDM
+#define BT_RELEASE_MODE ESP_BT_MODE_BTDM
 #endif
 
 #define DOUBLE_RESET_WINDOW_MS 4000
+
+// 1 = wiring test only: no Wi-Fi, the demo sequence repeats forever.
+#ifndef BENCH_TEST
+#define BENCH_TEST 0
+#endif
 
 #define OLED_W 128
 #define OLED_H 64
@@ -57,6 +78,22 @@ int lastHttpCode = 0;
 
 WiFiClientSecure tls;
 HTTPClient http;
+
+// Bench test: while demoUntil is in the future, the unit plays a fixed
+// sequence instead of using the server.
+unsigned long demoStart = 0, demoUntil = 0;
+bool inDemo() { return millis() < demoUntil; }
+
+void runDemoStep() {
+  unsigned long t = millis() - demoStart;
+  drowsyTime = 3;
+  lastThreshold = 0.20;
+  if (t < 3000)       { level = LVL_NORMAL;   lastEar = 0.30; closedFor = 0; }
+  else if (t < 4500)  { level = LVL_NORMAL;   lastEar = 0.12; closedFor = (t - 3000) / 1000.0; }
+  else if (t < 6000)  { level = LVL_WARNING;  lastEar = 0.12; closedFor = (t - 3000) / 1000.0; }
+  else if (t < 10000) { level = LVL_CRITICAL; lastEar = 0.12; closedFor = 3; }
+  else                { level = LVL_NORMAL;   lastEar = 0.30; closedFor = 0; }
+}
 
 bool monitoringOff(Level l) { return l <= LVL_NO_CAMERA; }
 
@@ -256,15 +293,15 @@ void onProvEvent(arduino_event_t *e) {
 void runSetupMode() {
   wifistore::disarmDoubleReset();
   uint64_t mac = ESP.getEfuseMac();
-  char name[20];
-  snprintf(name, sizeof(name), "PROV_C3_%02X%02X%02X",
+  char name[24];
+  snprintf(name, sizeof(name), "PROV_ALERT_%02X%02X%02X",
            (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
   provName = name;
   provPin = String(10000000 + esp_random() % 90000000);
   Serial.printf("[setup] Bluetooth setup: name %s, PIN %s\n", provName.c_str(), provPin.c_str());
 
   WiFi.onEvent(onProvEvent);
-  WiFiProv.beginProvision(PROV_SCHEME_BLE, PROV_FREE_BLE, PROV_SECURITY_1,
+  WiFiProv.beginProvision(PROV_SCHEME_BLE, PROV_FREE, PROV_SECURITY_1,
                           provPin.c_str(), provName.c_str(), nullptr, nullptr, true);
 
   unsigned long t0 = millis(), lastChirp = 0, savedAt = 0;
@@ -327,6 +364,11 @@ void handleSerial() {
   } else if (cmd == "setup") {
     requestSetupOnNextBoot();
     ESP.restart();
+  } else if (cmd == "demo") {
+    Serial.println("Demo: ALERT 3 s, eyes closing, WARNING, WAKE UP 4 s, ALERT");
+    muted = false;
+    demoStart = millis();
+    demoUntil = demoStart + 12000;
   }
 }
 
@@ -351,10 +393,20 @@ void setup() {
   outputs(false);
   if (BUTTON_PIN >= 0) pinMode(BUTTON_PIN, INPUT_PULLUP);
   xTaskCreate(buzzerTask, "buzzer", 2048, nullptr, 2, nullptr);
+#if !CONFIG_IDF_TARGET_ESP32C3
+  // ESP32-CAM board: keep the bright flash LED (GPIO 4) off.
+  pinMode(4, OUTPUT);
+  digitalWrite(4, LOW);
+#endif
 
   Wire.begin(OLED_SDA, OLED_SCL);
   oledOk = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   if (!oledOk) Serial.println("[oled] not found at 0x3C, continuing without display");
+
+  if (BENCH_TEST) {
+    Serial.println("[bench] BENCH_TEST is on: no Wi-Fi, repeating the demo");
+    return;
+  }
 
   WifiCred tmp[WIFI_STORE_MAX];
   int saved = wifistore::load(tmp);
@@ -376,7 +428,7 @@ void setup() {
   }
   if (doubleReset || buttonHeld || saved == 0) runSetupMode();
 
-  esp_bt_controller_mem_release(ESP_BT_MODE_BLE);  // Bluetooth not used in this boot
+  esp_bt_controller_mem_release(BT_RELEASE_MODE);  // Bluetooth not used in this boot
 
   tls.setInsecure();  // see the TLS note in Firmware/README.md
   if (!connectSavedWifi()) {
@@ -391,6 +443,19 @@ void setup() {
 void loop() {
   handleSerial();
   handleButton();
+
+  if (BENCH_TEST && !inDemo()) {
+    delay(2000);  // short gap of silence between runs
+    muted = false;
+    demoStart = millis();
+    demoUntil = demoStart + 12000;
+  }
+  if (inDemo()) {
+    runDemoStep();
+    drawScreen();
+    delay(10);
+    return;
+  }
 
   if (WiFi.status() == WL_CONNECTED && millis() - lastPollMs >= POLL_INTERVAL_MS) {
     lastPollMs = millis();

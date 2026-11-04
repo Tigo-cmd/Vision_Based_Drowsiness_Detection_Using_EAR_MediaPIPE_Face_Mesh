@@ -49,6 +49,11 @@
 #endif
 #define DOUBLE_RESET_WINDOW_MS 4000
 
+// 1 = camera test only: no Wi-Fi or Bluetooth; type "snap" in the Serial Monitor.
+#ifndef BENCH_TEST
+#define BENCH_TEST 0
+#endif
+
 // 1 = this board drives its own OLED and buzzer (single-board build).
 // 0 = a separate ESP32-C3 alert unit does that; this board only sends frames.
 #ifndef USE_LOCAL_ALERTS
@@ -61,6 +66,7 @@
 // Small red LED on the back of the board, active low. Used for status when
 // there's no OLED: fast blink = Bluetooth setup, on = sending frames, off = no link.
 #define STATUS_LED_PIN 33
+void statusLed(bool on);
 
 // ---- AI-Thinker camera pins ----
 #define PWDN_GPIO_NUM 32
@@ -428,6 +434,15 @@ void handleSerial() {
     Serial.println("Saved networks cleared. Restarting into setup.");
     delay(200);
     ESP.restart();
+  } else if (cmd == "snap") {
+    // Bench check that the camera works, no server needed.
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) {
+      Serial.printf("Camera OK: %ux%u JPEG, %u bytes\n", fb->width, fb->height, (unsigned)fb->len);
+      esp_camera_fb_return(fb);
+    } else {
+      Serial.println("Camera FAILED: check the ribbon cable and that PSRAM is enabled");
+    }
   } else if (cmd == "setup") {
     Preferences p; p.begin("boot", false); p.putBool("armed", true); p.end();
     ESP.restart();
@@ -456,6 +471,15 @@ void setup() {
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
   xTaskCreatePinnedToCore(buzzerTask, "buzzer", 2048, nullptr, 1, nullptr, 0);
+
+  if (BENCH_TEST) {
+    bool camOk = initCamera();
+    initOled();
+    Serial.println(camOk ? "[bench] camera started. Type \"snap\" to take a test frame."
+                         : "[bench] camera FAILED to start: check the ribbon cable and PSRAM setting");
+    chirpRequest = true;
+    return;
+  }
 
   // Credentials from config.h are only a first-boot default; after that, use Bluetooth.
   WifiCred tmp[WIFI_STORE_MAX];
@@ -510,6 +534,13 @@ void setup() {
 }
 
 void loop() {
+  if (BENCH_TEST) {
+    handleSerial();
+    statusLed((millis() / 1000) % 2);  // slow blink = bench mode
+    delay(10);
+    return;
+  }
+
   unsigned long now = millis();
   handleSerial();
 

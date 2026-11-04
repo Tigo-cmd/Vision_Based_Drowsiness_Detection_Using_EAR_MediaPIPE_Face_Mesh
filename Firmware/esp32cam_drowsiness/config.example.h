@@ -1,6 +1,10 @@
 // Copy this file to config.h and fill it in. config.h is gitignored.
 #pragma once
 
+// 1 = camera test: no Wi-Fi needed; type "snap" in the Serial Monitor.
+// Set back to 0 for real use.
+#define BENCH_TEST 0
+
 // Optional first-boot network. Leave empty and set Wi-Fi over Bluetooth instead
 // (see Firmware/README.md). Once anything is saved on the device, these are ignored.
 #define WIFI_SSID ""
@@ -32,7 +36,8 @@
 #define USE_FLASH_LED 0
 
 // 1 = this board drives the OLED and buzzer itself.
-// 0 = a separate ESP32-C3 alert unit does (Firmware/c3_alert_unit).
+// 0 = a separate alert unit does (Firmware/alert_unit: an ESP32-C3 or a
+//     second ESP32-CAM board with no camera).
 #define USE_LOCAL_ALERTS 1
 
 // Bluetooth setup PIN used when USE_LOCAL_ALERTS is 0 (no screen to show a

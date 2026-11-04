@@ -103,62 +103,93 @@ Over USB serial (115200) you can also type `wifi list`, `wifi clear` or `setup`.
 The bar along the bottom fills as the eyes stay closed and is full at the
 critical alert.
 
-## Two-board build: ESP32-C3 alert unit
+## Two-board build: camera board + alert unit
 
-Instead of wiring the OLED and buzzer to the ESP32-CAM, you can put them on
-an ESP32-C3. The camera then only sends frames, which makes it less prone to
-brownouts and frees its pins. The C3 asks the server for the alert state
-four times a second, so the two boards need no wires between them.
+The OLED and buzzer can go on a second board, the **alert unit**, instead of
+the ESP32-CAM. The alert unit can be an **ESP32-C3** or a second
+**ESP32-CAM board with no camera fitted**. One sketch, `alert_unit`, builds
+for either; it picks the pins from the board you select in Arduino.
+
+The camera board then only sends frames, which makes it less prone to
+brownouts. The alert unit asks the server for the alert state four times a
+second, so the two boards need no wires between them.
 
 ```
-ESP32-CAM ──frames──▶ server ◀──"what's the state?" every 250 ms── ESP32-C3
-                         │                                           ├── OLED
-                         └──▶ Telegram                               ├── buzzer
-                                                                     └── vibration motor (optional)
+ESP32-CAM ──frames──▶ server ◀──"what's the state?" every 250 ms── alert unit
+(camera board)           │                                          ├── OLED
+                         └──▶ Telegram                              ├── buzzer
+                                                                    └── button / motor (optional)
 ```
 
-Because the C3 asks the server, it also notices when the camera stops
-sending. It shows `NO CAMERA` and chirps every 30 s until frames come back.
+Because the alert unit asks the server, it also notices when the camera
+stops sending. It shows `NO CAMERA` and chirps every 30 s until frames come
+back.
 
-**Wiring (ESP32-C3 SuperMini)**
+### Alert unit wiring
 
-| C3 pin | Goes to |
-|---|---|
-| 3V3 | OLED VCC |
-| 5V | buzzer + (and motor +) |
-| GND | OLED GND, transistor emitters, button |
-| GPIO 8 | OLED SDA |
-| GPIO 9 | OLED SCL |
-| GPIO 4 | 1 kΩ → transistor base, collector → buzzer − |
-| GPIO 5 | 1 kΩ → second transistor → vibration motor − (optional; add a diode across the motor) |
-| GPIO 3 | push button to GND (optional) |
+| Part | ESP32-CAM board, no camera | ESP32-C3 SuperMini |
+|---|---|---|
+| OLED VCC | 3V3 | 3V3 |
+| OLED GND | GND | GND |
+| OLED SDA | GPIO 15 | GPIO 8 |
+| OLED SCL | GPIO 14 | GPIO 9 |
+| Buzzer (1 kΩ → transistor base; collector → buzzer −; buzzer + → 5V) | GPIO 13 | GPIO 4 |
+| Button to GND (optional) | GPIO 2 | GPIO 3 |
+| Vibration motor via a second transistor (optional, diode across motor) | not available | GPIO 5 |
 
-The SuperMini's on-board LED shares GPIO 8 and will flicker with the OLED.
-That's harmless.
+On the ESP32-CAM board, GPIO 4 also drives the bright flash LED, so it isn't
+used for a motor; the sketch holds it off. The C3 SuperMini's on-board LED
+shares GPIO 8 and flickers with the OLED, which is harmless.
 
-**Setting up**
+### Camera board
 
-1. Flash the ESP32-CAM with `USE_LOCAL_ALERTS 0` and your own `SETUP_PIN` in
-   its `config.h`. With no screen, its red LED on the back shows status: fast
-   blink = Bluetooth setup, on = sending frames, off = no link. Its
-   Bluetooth PIN is the `SETUP_PIN` you chose.
-2. Copy `c3_alert_unit/config.example.h` to `config.h`. Check the pins.
-3. Arduino IDE: Board **ESP32C3 Dev Module**, USB CDC On Boot **Enabled**,
-   Partition scheme **Huge APP (3MB No OTA)**. Upload `c3_alert_unit`.
-4. Set the C3's Wi-Fi the same way as the camera: it appears in the app as
-   `PROV_C3_…` with a PIN on its OLED. To re-enter setup, double-press RST or
-   hold the button while plugging it in.
+Flash `esp32cam_drowsiness` with these in its `config.h`:
 
-**The button.** A short press during `WARNING` or `WAKE UP` silences the
-buzzer and motor. The mute ends by itself once the eyes are open again, so
-the next drowsy episode alarms as normal.
+```cpp
+#define USE_LOCAL_ALERTS 0
+#define SETUP_PIN "pick-your-own"
+```
 
-**C3 screens**, in addition to the ones above:
+With no screen, its small red LED on the back shows status: fast blink =
+Bluetooth setup, on = sending frames, off = no link. Its Bluetooth PIN is
+the `SETUP_PIN` you chose, and it appears in the app as `PROV_xxxxxx`.
 
-| Screen | Meaning |
-|---|---|
-| `NO CAMERA` | server has had no frame for 5 s; monitoring is off |
-| `MUTED` (top right) | alarm silenced with the button |
+### Testing step by step
+
+1. **Alert unit wiring, no Wi-Fi.** Copy `alert_unit/config.example.h` to
+   `config.h`, set `BENCH_TEST 1`, and upload. The OLED and buzzer repeat
+   `ALERT` → `WARNING` (slow beeps) → `WAKE UP` (fast beeps, inverted
+   screen). Press the button during `WAKE UP`: it should go quiet and show
+   `MUTED`. Then set `BENCH_TEST 0` and upload again.
+2. **Camera, no Wi-Fi.** In the camera's `config.h` set `BENCH_TEST 1`,
+   upload, and open the Serial Monitor at 115200. Type `snap`; it should
+   print `Camera OK: 640x480 JPEG, ... bytes`, and the red LED blinks slowly.
+   Then set `BENCH_TEST 0` and upload again.
+3. **Wi-Fi on both.** Each one starts in Bluetooth setup the first time. Use
+   the ESP BLE Provisioning app: the camera is `PROV_xxxxxx` with your
+   `SETUP_PIN`, the alert unit is `PROV_ALERT_xxxxxx` with the PIN on its
+   OLED. A phone hotspot works for both.
+4. **Server link.** With the camera off, the alert unit should show
+   `NO CAMERA` (server reached, but no frames). If it shows `NO SERVER`, the
+   server is asleep or unreachable; wait a minute.
+5. **End to end.** Switch the camera on and face it. The camera's red LED
+   comes on, the alert unit shows `ALERT` with your EAR, and the dashboard
+   lists the camera as online. Close your eyes: `WARNING` at 1.5 s,
+   `WAKE UP` at 3 s, and a Telegram message.
+6. **Camera failure.** Unplug the camera board. Within about 5 s the alert
+   unit shows `NO CAMERA` and chirps.
+
+Serial commands on the alert unit: `demo` (run the sequence once, any time),
+`wifi list`, `wifi clear`, `setup`. On the camera: `snap`, `wifi list`,
+`wifi clear`, `setup`.
+
+**Arduino board settings**
+
+| Board | Select | Also set |
+|---|---|---|
+| Camera board | AI Thinker ESP32-CAM | Partition **Huge APP (3MB No OTA)** |
+| Alert unit on an ESP32-CAM board | AI Thinker ESP32-CAM | Partition **Huge APP (3MB No OTA)** |
+| Alert unit on a C3 | ESP32C3 Dev Module | USB CDC On Boot **Enabled**, Partition **Huge APP (3MB No OTA)** |
 
 ## Things to know
 
