@@ -5,7 +5,7 @@
 // Set back to 0 for real use.
 #define BENCH_TEST 0
 
-// Optional first-boot network. Leave empty and set Wi-Fi over Bluetooth instead
+// Optional first-boot network. Leave empty and set Wi-Fi through the setup hotspot instead
 // (see Firmware/README.md). Once anything is saved on the device, these are ignored.
 #define WIFI_SSID ""
 #define WIFI_PASS ""
@@ -13,7 +13,7 @@
 // How long to try each saved network at boot before moving on.
 #define WIFI_CONNECT_TIMEOUT_MS 12000
 
-// Bluetooth setup mode gives up after this and retries the saved networks.
+// Wi-Fi setup mode gives up after this and retries the saved networks.
 #define SETUP_MODE_TIMEOUT_MS 300000
 
 // Same backend the dashboard uses. Must end in /detect.
@@ -40,8 +40,9 @@
 //     second ESP32-CAM board with no camera).
 #define USE_LOCAL_ALERTS 1
 
-// Bluetooth setup PIN used when USE_LOCAL_ALERTS is 0 (no screen to show a
-// random one). Change it: anyone nearby who knows it can set the Wi-Fi.
+// Password of the setup hotspot (DROWSY-CAM-xxxx) when USE_LOCAL_ALERTS is 0
+// and there's no screen to show a random one. At least 8 characters. Change
+// it: anyone nearby who knows it can change the camera's Wi-Fi.
 #define SETUP_PIN "changeme"
 
 // Buzzer driven through an NPN transistor: HIGH = on. Set to 0 if your module is active-low.

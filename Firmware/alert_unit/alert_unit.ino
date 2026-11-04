@@ -25,32 +25,14 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <WiFiProv.h>
-#include "esp_bt.h"
+#include <WebServer.h>
+#include <DNSServer.h>
 
 #include "config.h"
 #include "wifi_store.h"
 
-// arduino-esp32 3.x renamed the provisioning constants.
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-#define PROV_SCHEME_BLE NETWORK_PROV_SCHEME_BLE
-#define PROV_SECURITY_1 NETWORK_PROV_SECURITY_1
-#define PROV_FREE_BLE_ONLY NETWORK_PROV_SCHEME_HANDLER_FREE_BLE
-#define PROV_FREE_BTDM NETWORK_PROV_SCHEME_HANDLER_FREE_BTDM
-#else
-#define PROV_SCHEME_BLE WIFI_PROV_SCHEME_BLE
-#define PROV_SECURITY_1 WIFI_PROV_SECURITY_1
-#define PROV_FREE_BLE_ONLY WIFI_PROV_SCHEME_HANDLER_FREE_BLE
-#define PROV_FREE_BTDM WIFI_PROV_SCHEME_HANDLER_FREE_BTDM
-#endif
-
-// The C3 has Bluetooth LE only; the classic ESP32 has LE + Classic (BTDM).
-#if CONFIG_IDF_TARGET_ESP32C3
-#define PROV_FREE PROV_FREE_BLE_ONLY
-#define BT_RELEASE_MODE ESP_BT_MODE_BLE
-#else
-#define PROV_FREE PROV_FREE_BTDM
-#define BT_RELEASE_MODE ESP_BT_MODE_BTDM
+#ifndef SETUP_PIN
+#define SETUP_PIN "changeme"  // setup hotspot password if there's no OLED to show one
 #endif
 
 #define DOUBLE_RESET_WINDOW_MS 4000
@@ -231,11 +213,20 @@ void poll() {
 }
 
 // ---------------------------------------------------------------------------
-// Bluetooth Wi-Fi setup (same flow as the ESP32-CAM; see Firmware/README.md)
+// Wi-Fi setup mode (hotspot + web page)
+//
+// The board starts its own Wi-Fi network, DROWSY-ALERT-xxxx. Join it from a
+// phone or laptop and a setup page opens (or go to http://192.168.4.1). Pick
+// your network, type the password, and the board checks it before saving.
+// Same setup as the camera board, so both work the same way.
 // ---------------------------------------------------------------------------
 
-String provName, provPin, pendingSsid, pendingPass;
-volatile bool provSaved = false, provFailed = false, provEnded = false;
+String apName, apPass, optionsHtml;
+String pendingSsid, pendingPass;
+enum SetupState { SETUP_IDLE, SETUP_CONNECTING, SETUP_SAVED, SETUP_FAILED };
+volatile SetupState setupState = SETUP_IDLE;
+unsigned long connectStartMs = 0, savedAtMs = 0;
+WebServer *web = nullptr;
 
 void drawSetupScreen(unsigned long msLeft) {
   if (!oledOk) return;
@@ -243,76 +234,178 @@ void drawSetupScreen(unsigned long msLeft) {
   oled.setTextColor(SSD1306_WHITE);
   oled.setTextSize(1);
   oled.setCursor(0, 0);
-  oled.print("BLUETOOTH SETUP");
+  oled.print("WIFI SETUP");
   oled.drawFastHLine(0, 10, OLED_W, SSD1306_WHITE);
   oled.setCursor(0, 14);
-  oled.print(provName);
-  oled.setCursor(0, 26);
-  oled.print("PIN");
-  oled.setTextSize(2);
-  oled.setCursor(24, 23);
-  oled.print(provPin);
-  oled.setTextSize(1);
-  oled.setCursor(0, 44);
-  if (provFailed) oled.print("Wrong password? Retry");
-  else if (provSaved) oled.print("Saved. Restarting...");
-  else oled.print("App: ESP BLE Prov");
-  oled.setCursor(0, 55);
+  oled.print("Join ");
+  oled.print(apName);
+  oled.setCursor(0, 25);
+  oled.print("Pass ");
+  oled.print(apPass);
+  oled.setCursor(0, 36);
+  oled.print("Open 192.168.4.1");
+  oled.setCursor(0, 47);
+  if (setupState == SETUP_CONNECTING) oled.print("Checking...");
+  else if (setupState == SETUP_FAILED) oled.print("Failed. Retry");
+  else if (setupState == SETUP_SAVED) oled.print("Saved. Restarting");
+  oled.setCursor(0, 56);
   oled.printf("Exits in %lus", msLeft / 1000);
   oled.display();
 }
 
-void onProvEvent(arduino_event_t *e) {
-  switch (e->event_id) {
-    case ARDUINO_EVENT_PROV_CRED_RECV: {
-      // Held until the board has actually joined. The arrays aren't
-      // null-terminated when full.
-      char ssid[33] = {0}, pass[65] = {0};
-      memcpy(ssid, e->event_info.prov_cred_recv.ssid, 32);
-      memcpy(pass, e->event_info.prov_cred_recv.password, 64);
-      pendingSsid = ssid;
-      pendingPass = pass;
-      provFailed = false;
-      break;
-    }
-    case ARDUINO_EVENT_PROV_CRED_FAIL:
-      provFailed = true;
-      break;
-    case ARDUINO_EVENT_PROV_CRED_SUCCESS:
-      wifistore::add(pendingSsid, pendingPass);
-      provSaved = true;
-      break;
-    case ARDUINO_EVENT_PROV_END:
-      provEnded = true;
-      break;
-    default:
-      break;
+String htmlEscape(const String &in) {
+  String out;
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '<') out += "&lt;";
+    else if (c == '>') out += "&gt;";
+    else if (c == '&') out += "&amp;";
+    else if (c == '"') out += "&quot;";
+    else out += c;
+  }
+  return out;
+}
+
+String page(const String &body, int refreshSec = 0) {
+  String h = F("<!doctype html><html><head><meta charset=utf-8>"
+               "<meta name=viewport content='width=device-width,initial-scale=1'>");
+  if (refreshSec) h += "<meta http-equiv=refresh content='" + String(refreshSec) + ";url=/result'>";
+  h += F("<title>Alert unit Wi-Fi setup</title><style>"
+         "body{font-family:sans-serif;max-width:380px;margin:24px auto;padding:0 16px;color:#222}"
+         "label{display:block;margin:14px 0 4px}input,select{width:100%;padding:10px;font-size:16px;box-sizing:border-box}"
+         "button{margin-top:18px;width:100%;padding:12px;font-size:16px}"
+         ".small{font-size:14px;color:#555}</style></head><body>");
+  return h + body + "</body></html>";
+}
+
+void handleRoot() {
+  String b = "<h2>Alert unit Wi-Fi setup</h2><form method=post action=/save>"
+             "<label>Network</label><input name=ssid list=nets required autocomplete=off>"
+             "<datalist id=nets>" + optionsHtml + "</datalist>"
+             "<label>Password</label><input name=pass type=password>"
+             "<label class=small><input type=checkbox name=skip style='width:auto'> "
+             "Save without testing (tick this if the network is this phone's own hotspot)</label>"
+             "<button>Save</button></form>";
+  web->send(200, "text/html", page(b));
+}
+
+void handleSave() {
+  pendingSsid = web->arg("ssid");
+  pendingPass = web->arg("pass");
+  pendingSsid.trim();
+  if (pendingSsid.isEmpty()) {
+    web->sendHeader("Location", "/");
+    web->send(302);
+    return;
+  }
+  if (web->hasArg("skip")) {
+    wifistore::add(pendingSsid, pendingPass);
+    setupState = SETUP_SAVED;
+    savedAtMs = millis();
+    web->send(200, "text/html", page("<h2>Saved</h2><p>Saved <b>" + htmlEscape(pendingSsid) +
+        "</b> without testing. The alert unit is restarting. Turn your hotspot on now.</p>"));
+    return;
+  }
+  Serial.printf("[setup] trying \"%s\"\n", pendingSsid.c_str());
+  WiFi.begin(pendingSsid.c_str(), pendingPass.c_str());
+  setupState = SETUP_CONNECTING;
+  connectStartMs = millis();
+  web->send(200, "text/html", page("<h2>Checking&hellip;</h2><p>Trying to join <b>" +
+      htmlEscape(pendingSsid) + "</b>. This takes up to 15 seconds.</p>"
+      "<p class=small>If your phone drops off the alert unit's network, join it again and "
+      "this page will show the result.</p>", 3));
+}
+
+void handleResult() {
+  String ssid = htmlEscape(pendingSsid);
+  if (setupState == SETUP_CONNECTING)
+    web->send(200, "text/html", page("<h2>Checking&hellip;</h2><p>Still trying <b>" + ssid + "</b>.</p>", 3));
+  else if (setupState == SETUP_SAVED)
+    web->send(200, "text/html", page("<h2>Connected</h2><p>Joined <b>" + ssid +
+        "</b> and saved it. The alert unit is restarting.</p>"));
+  else if (setupState == SETUP_FAILED)
+    web->send(200, "text/html", page("<h2>Couldn't connect</h2><p>Could not join <b>" + ssid +
+        "</b>. Check the password and that the network is on.</p><p><a href=/>Try again</a></p>"));
+  else {
+    web->sendHeader("Location", "/");
+    web->send(302);
   }
 }
 
 void runSetupMode() {
-  wifistore::disarmDoubleReset();
+  wifistore::disarmDoubleReset();  // so a reset from here is a normal boot
   uint64_t mac = ESP.getEfuseMac();
   char name[24];
-  snprintf(name, sizeof(name), "PROV_ALERT_%02X%02X%02X",
-           (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
-  provName = name;
-  provPin = String(10000000 + esp_random() % 90000000);
-  Serial.printf("[setup] Bluetooth setup: name %s, PIN %s\n", provName.c_str(), provPin.c_str());
+  snprintf(name, sizeof(name), "DROWSY-ALERT-%02X%02X", (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  apName = name;
+  // Random 8-digit password when the OLED can show it; otherwise SETUP_PIN from config.h.
+  apPass = oledOk ? String(10000000 + esp_random() % 90000000) : String(SETUP_PIN);
+  if (apPass.length() < 8) {
+    Serial.println("[setup] SETUP_PIN is shorter than 8 characters; using \"drowsyalert\"");
+    apPass = "drowsyalert";
+  }
 
-  WiFi.onEvent(onProvEvent);
-  WiFiProv.beginProvision(PROV_SCHEME_BLE, PROV_FREE, PROV_SECURITY_1,
-                          provPin.c_str(), provName.c_str(), nullptr, nullptr, true);
+  // List nearby networks for the form before starting the hotspot.
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n && i < 20; i++) {
+    optionsHtml += "<option value=\"" + htmlEscape(WiFi.SSID(i)) + "\">";
+  }
+  WiFi.scanDelete();
 
-  unsigned long t0 = millis(), lastChirp = 0, savedAt = 0;
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apName.c_str(), apPass.c_str());
+  delay(100);
+  IPAddress ip = WiFi.softAPIP();
+  Serial.printf("[setup] hotspot %s, password %s, open http://%s\n",
+                apName.c_str(), apPass.c_str(), ip.toString().c_str());
+
+  DNSServer dns;
+  dns.start(53, "*", ip);  // every name points here, so phones show the page
+  WebServer server(80);
+  web = &server;
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.on("/result", HTTP_GET, handleResult);
+  server.onNotFound([]() {
+    web->sendHeader("Location", "http://192.168.4.1/");
+    web->send(302);
+  });
+  server.begin();
+
+  unsigned long t0 = millis(), lastChirp = 0;
   while (true) {
+    dns.processNextRequest();
+    server.handleClient();
+
+    if (setupState == SETUP_CONNECTING) {
+      if (WiFi.status() == WL_CONNECTED) {
+        wifistore::add(pendingSsid, pendingPass);
+        Serial.println("[setup] joined, network saved");
+        setupState = SETUP_SAVED;
+        savedAtMs = millis();
+      } else if (millis() - connectStartMs > 15000) {
+        Serial.println("[setup] could not join, wrong password or out of range");
+        WiFi.disconnect();  // station only; the hotspot stays up
+        setupState = SETUP_FAILED;
+      }
+    }
+    // Give the page time to show the result before restarting.
+    if (setupState == SETUP_SAVED && millis() - savedAtMs > 8000) break;
+
     unsigned long el = millis() - t0;
-    drawSetupScreen(el < SETUP_MODE_TIMEOUT_MS ? SETUP_MODE_TIMEOUT_MS - el : 0);
+    if (el > SETUP_MODE_TIMEOUT_MS && setupState != SETUP_CONNECTING) {
+      Serial.println("[setup] timed out");
+      break;
+    }
+    static unsigned long lastDraw = 0;
+    if (millis() - lastDraw > 250) {
+      lastDraw = millis();
+      drawSetupScreen(el < SETUP_MODE_TIMEOUT_MS ? SETUP_MODE_TIMEOUT_MS - el : 0);
+    }
     if (millis() - lastChirp > 5000) { chirpRequest = true; lastChirp = millis(); }
-    if (provSaved && !savedAt) savedAt = millis();
-    if ((savedAt && millis() - savedAt > 3000) || (provSaved && provEnded)) break;
-    if (el > SETUP_MODE_TIMEOUT_MS) break;
-    delay(200);
+    delay(5);
   }
   delay(500);
   ESP.restart();
@@ -428,7 +521,6 @@ void setup() {
   }
   if (doubleReset || buttonHeld || saved == 0) runSetupMode();
 
-  esp_bt_controller_mem_release(BT_RELEASE_MODE);  // Bluetooth not used in this boot
 
   tls.setInsecure();  // see the TLS note in Firmware/README.md
   if (!connectSavedWifi()) {

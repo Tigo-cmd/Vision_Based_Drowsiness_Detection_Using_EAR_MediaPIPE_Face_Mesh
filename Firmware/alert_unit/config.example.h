@@ -5,7 +5,7 @@
 // ALERT -> WARNING -> WAKE UP. Set back to 0 for real use.
 #define BENCH_TEST 0
 
-// Optional first-boot network. Leave empty and set Wi-Fi over Bluetooth instead.
+// Optional first-boot network. Leave empty and set Wi-Fi through the setup hotspot instead.
 #define WIFI_SSID ""
 #define WIFI_PASS ""
 
