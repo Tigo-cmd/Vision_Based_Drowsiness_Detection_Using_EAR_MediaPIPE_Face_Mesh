@@ -9,8 +9,13 @@ const HISTORY_MS = 90_000;
 /**
  * Polls the server: the live alert state often, status and events less often.
  * Each poll waits for the previous one, so a slow server never gets a pile-up.
+ *
+ * @param device Which session to read. Pass CLIENT_ID while viewing this
+ * browser's own camera, so its EAR/alert/events stay isolated from other
+ * visitors; omit (or pass undefined) while viewing the ESP32-CAM, so
+ * everyone sees that one shared hardware camera's real detection.
  */
-export function useMonitor() {
+export function useMonitor(device?: string) {
   const [alert, setAlert] = useState<AlertState | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [events, setEvents] = useState<AlertEvent[]>([]);
@@ -22,11 +27,13 @@ export function useMonitor() {
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
+    lastFrame.current = -1;
+    setHistory([]);
 
     const tick = async () => {
       const t0 = performance.now();
       try {
-        const a = await api.alert();
+        const a = await api.alert(device);
         if (stopped) return;
         setAlert(a);
         setOnline(true);
@@ -50,13 +57,13 @@ export function useMonitor() {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [device]);
 
   const refreshSlow = useCallback(async () => {
-    const [s, e] = await Promise.allSettled([api.status(), api.events()]);
+    const [s, e] = await Promise.allSettled([api.status(device), api.events(device)]);
     if (s.status === 'fulfilled') setStatus(s.value);
     if (e.status === 'fulfilled') setEvents(e.value);
-  }, []);
+  }, [device]);
 
   useEffect(() => {
     let stopped = false;

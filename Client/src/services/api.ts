@@ -5,6 +5,32 @@ export const API_BASE_URL = (
   'https://vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh.fly.dev'
 ).replace(/\/$/, '');
 
+/**
+ * This browser's own id, so its EAR/alert/events never mix with another
+ * visitor's or with the shared ESP32-CAM state. The server only isolates
+ * ids shaped like this ("browser-..."); anything else (an ESP32, or an old
+ * cached frontend sending the literal "browser") shares one state, same as
+ * always.
+ */
+export const CLIENT_ID = (() => {
+  const KEY = 'client_id';
+  try {
+    const existing = localStorage.getItem(KEY);
+    if (existing) return existing;
+    const id = `browser-${crypto.randomUUID()}`;
+    localStorage.setItem(KEY, id);
+    return id;
+  } catch {
+    return `browser-${crypto.randomUUID()}`; // private mode: not persisted, but still isolated
+  }
+})();
+
+function withDevice(path: string, device?: string): string {
+  if (!device) return path;
+  const q = new URLSearchParams({ device });
+  return `${path}${path.includes('?') ? '&' : '?'}${q}`;
+}
+
 async function request<T>(path: string, init?: RequestInit, timeoutMs = 8000): Promise<T> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -24,8 +50,9 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 8000): P
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export const api = {
-  async alert(): Promise<AlertState> {
-    const a = await request<any>('/alert');
+  /** @param device Pass CLIENT_ID to read this browser's own isolated state; omit for the shared/hardware state. */
+  async alert(device?: string): Promise<AlertState> {
+    const a = await request<any>(withDevice('/alert', device));
     return {
       level: a.level ?? (a.drowsy ? 'critical' : 'normal'),
       drowsy: !!a.drowsy,
@@ -42,8 +69,8 @@ export const api = {
     };
   },
 
-  async status(): Promise<ServerStatus> {
-    const s = await request<any>('/status');
+  async status(device?: string): Promise<ServerStatus> {
+    const s = await request<any>(withDevice('/status', device));
     return {
       uptime: s.uptime ?? 0,
       cameraConnected: s.camera === 'connected',
@@ -59,8 +86,8 @@ export const api = {
     };
   },
 
-  async events(): Promise<AlertEvent[]> {
-    const data = await request<any>('/events');
+  async events(device?: string): Promise<AlertEvent[]> {
+    const data = await request<any>(withDevice('/events', device));
     return (data.events ?? []).map((e: any) => ({
       id: `${e.timestamp}-${e.source ?? ''}`,
       timestamp: e.timestamp,
@@ -71,8 +98,8 @@ export const api = {
     }));
   },
 
-  clearEvents(): Promise<unknown> {
-    return request('/events', { method: 'DELETE' });
+  clearEvents(device?: string): Promise<unknown> {
+    return request(withDevice('/events', device), { method: 'DELETE' });
   },
 
   async settings(): Promise<Settings> {
@@ -103,13 +130,13 @@ export const api = {
     return request('/detect', {
       method: 'POST',
       body: jpeg,
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Device-Id': 'browser' },
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Device-Id': CLIENT_ID },
     });
   },
 
-  async telegramTest(): Promise<{ ok: boolean; error?: string }> {
+  async telegramTest(device?: string): Promise<{ ok: boolean; error?: string }> {
     try {
-      return await request('/telegram/test', { method: 'POST' }, 30000);
+      return await request(withDevice('/telegram/test', device), { method: 'POST' }, 30000);
     } catch (e) {
       const body = (e as { body?: { error?: string } }).body;
       return { ok: false, error: body?.error ?? (e as Error).message };

@@ -9,6 +9,8 @@ interface Props {
   latencyMs: number | null;
   lastFrameAge: number | null;
   onToast: (msg: string, kind?: 'ok' | 'err') => void;
+  /** Same session /status is reading, so a sent test shows up in this same row. */
+  device?: string;
 }
 
 const TELEGRAM_TEXT = {
@@ -34,14 +36,14 @@ function Row({ ok, label, value, children }: { ok: boolean | null; label: string
   );
 }
 
-export function HealthList({ status, online, latencyMs, lastFrameAge, onToast }: Props) {
+export function HealthList({ status, online, latencyMs, lastFrameAge, onToast, device }: Props) {
   const [testing, setTesting] = useState(false);
   const cams = status?.devices ?? [];
   const live = cams.filter((d) => d.online);
 
   const test = async () => {
     setTesting(true);
-    const res = await api.telegramTest();
+    const res = await api.telegramTest(device);
     setTesting(false);
     onToast(res.ok ? 'Test message sent to Telegram' : `Telegram: ${res.error ?? 'failed'}`, res.ok ? 'ok' : 'err');
   };

@@ -204,9 +204,10 @@ Serial commands on the alert unit: `demo` (run the sequence once, any time),
   delays the alarm a little but doesn't change the threshold.
 - **Cold starts.** The fly.io machine stops when idle, and the first request
   can take several seconds. The unit shows `NO SERVER` until it wakes.
-- **One camera at a time.** The backend keeps one alert state. Running the
-  browser camera and the ESP32 together mixes their frames, so use one or the
-  other.
+- **One hardware camera at a time.** Every browser tab gets its own isolated
+  alert state, and the browser camera no longer mixes with the ESP32's. But
+  all ESP32-CAM boards still share one state, so running two of them at once
+  mixes their frames.
 - **Night.** The OV2640 has no IR filter removal. `USE_FLASH_LED` lights the
   on-board LED, but it is too bright to drive with. An IR LED ring with an
   IR-sensitive camera module is the proper fix.

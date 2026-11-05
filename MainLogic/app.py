@@ -41,14 +41,15 @@ FRAME_GAP_RESET_SEC = 2.0
 SOURCE_ONLINE_SEC = 5.0
 
 
-class AppState:
+class ClientSession:
+    """One viewer's drowsiness state: EAR, alert level, events, Telegram
+    outcome. The hardware camera (and anything else not an isolated browser
+    tab) shares one of these via AppState itself; each browser tab that
+    sends an X-Device-Id of "browser-<uuid>" gets its own, so two people
+    looking at the dashboard don't see or hear each other's detection."""
+
     def __init__(self):
-        self.lock = threading.Lock()
         self.current_ear = 0.0
-        self.threshold = 0.20
-        self.drowsy_time_sec = 3.0
-        # Warning fires at this fraction of drowsy_time_sec.
-        self.warning_ratio = 0.5
         self.closed_since = None
         self.last_frame_time = 0.0
         self.consecutive_frames = 0
@@ -60,21 +61,12 @@ class AppState:
         self.frame_size = None
         # Frames fully analysed, so a logger can tell one frame from the next.
         self.processed_frames = 0
-        self.last_source = None
         self.events = deque(maxlen=100)
-        self.start_time = time.time()
 
-        self.telegram_enabled = True
-        self.telegram_cooldown = 60
         self.last_telegram_time = 0.0
         self.telegram_last_ok = None      # None = nothing sent yet
         self.telegram_last_error = None
         self.telegram_last_sent_at = None
-
-        # device_id -> {"last_seen": float, "frames": int}
-        self.sources = {}
-        # Latest JPEG per non-browser device, so the dashboard can show the ESP32 view.
-        self.latest_frames = {}
 
     @property
     def is_drowsy(self):
@@ -87,7 +79,50 @@ class AppState:
         return max(0.0, self.last_frame_time - self.closed_since)
 
 
+class AppState(ClientSession):
+    """The shared session (hardware cameras, and anything not an isolated
+    browser tab) plus server-wide config and bookkeeping."""
+
+    def __init__(self):
+        super().__init__()
+        self.lock = threading.Lock()
+        self.threshold = 0.20
+        self.drowsy_time_sec = 3.0
+        # Warning fires at this fraction of drowsy_time_sec.
+        self.warning_ratio = 0.5
+        self.last_source = None
+        self.start_time = time.time()
+
+        self.telegram_enabled = True
+        self.telegram_cooldown = 60
+
+        # device_id -> {"last_seen": float, "frames": int}
+        self.sources = {}
+        # Latest JPEG per non-browser device, so the dashboard can show the ESP32 view.
+        self.latest_frames = {}
+        # Isolated per-browser-tab sessions; see ClientSession.
+        self.sessions = {}
+
+
 state = AppState()
+
+
+def is_isolated_session(device_id):
+    return device_id.startswith('browser-')
+
+
+def get_or_create_session(device_id):
+    """The session /detect should update for this device_id."""
+    if is_isolated_session(device_id):
+        return state.sessions.setdefault(device_id, ClientSession())
+    return state
+
+
+def peek_session(device_id):
+    """Like get_or_create_session, but a GET poll never creates one just by asking."""
+    if is_isolated_session(device_id):
+        return state.sessions.get(device_id) or ClientSession()
+    return state
 
 
 def telegram_configured():
@@ -189,40 +224,42 @@ async def _telegram_send(message, image_bytes=None):
             await bot_client.send_message(chat_id=CHAT_ID, text=message)
 
 
-def send_telegram_alert(message, image_bytes=None):
-    """Blocking send. Records the outcome so /status reports real health."""
+def send_telegram_alert(message, image_bytes=None, session=None):
+    """Blocking send. Records the outcome on the session that triggered it,
+    so /status reports that viewer's own health, not someone else's."""
+    session = session or state
     if not telegram_configured():
-        state.telegram_last_ok = False
-        state.telegram_last_error = "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"
+        session.telegram_last_ok = False
+        session.telegram_last_error = "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"
         return False
     try:
         asyncio.run(_telegram_send(message, image_bytes))
-        state.telegram_last_ok = True
-        state.telegram_last_error = None
-        state.telegram_last_sent_at = datetime.now().isoformat()
+        session.telegram_last_ok = True
+        session.telegram_last_error = None
+        session.telegram_last_sent_at = datetime.now().isoformat()
         print("[Telegram] Alert sent")
         return True
     except Exception as e:
-        state.telegram_last_ok = False
-        state.telegram_last_error = str(e)
+        session.telegram_last_ok = False
+        session.telegram_last_error = str(e)
         print(f"[Telegram] Failed to send alert: {e}")
         traceback.print_exc()
         return False
 
 
-def send_telegram_alert_async(message, image_bytes=None):
+def send_telegram_alert_async(message, image_bytes=None, session=None):
     """Fire-and-forget so /detect (and the ESP32 waiting on it) isn't held up."""
     threading.Thread(
-        target=send_telegram_alert, args=(message, image_bytes), daemon=True
+        target=send_telegram_alert, args=(message, image_bytes, session), daemon=True
     ).start()
 
 
-def telegram_status():
+def telegram_status(session):
     if not telegram_configured():
         return "not_configured"
     if not state.telegram_enabled:
         return "disabled"
-    if state.telegram_last_ok is False:
+    if session.telegram_last_ok is False:
         return "error"
     return "configured"
 
@@ -250,13 +287,14 @@ def get_status():
     now = time.time()
     uptime = int(now - state.start_time)
     online = online_sources(now)
+    s = peek_session(request.args.get('device', ''))
     return jsonify({
         "status": "online",
         "uptime": uptime,
         "camera": "connected" if online else "idle",
-        "telegram": telegram_status(),
-        "telegram_last_error": state.telegram_last_error,
-        "telegram_last_sent_at": state.telegram_last_sent_at,
+        "telegram": telegram_status(s),
+        "telegram_last_error": s.telegram_last_error,
+        "telegram_last_sent_at": s.telegram_last_sent_at,
         "devices": [
             {
                 "id": dev,
@@ -271,8 +309,9 @@ def get_status():
 
 @app.route('/ear', methods=['GET'])
 def get_ear():
+    s = peek_session(request.args.get('device', ''))
     return jsonify({
-        "ear": round(state.current_ear, 3),
+        "ear": round(s.current_ear, 3),
         "threshold": state.threshold,
         "timestamp": int(time.time())
     })
@@ -280,34 +319,38 @@ def get_ear():
 
 @app.route('/alert', methods=['GET'])
 def get_alert():
+    device = request.args.get('device', '')
+    s = peek_session(device)
     return jsonify({
-        "drowsy": state.is_drowsy,
-        "level": state.level,
-        "closed_for": round(state.closed_for, 2),
+        "drowsy": s.is_drowsy,
+        "level": s.level,
+        "closed_for": round(s.closed_for, 2),
         "drowsy_time": state.drowsy_time_sec,
-        "consecutive_frames": state.consecutive_frames,
-        "face": state.face_detected,
-        "eyes": state.eye_points,
-        "frame_size": state.frame_size,
-        "ear": round(state.current_ear, 3),
+        "consecutive_frames": s.consecutive_frames,
+        "face": s.face_detected,
+        "eyes": s.eye_points,
+        "frame_size": s.frame_size,
+        "ear": round(s.current_ear, 3),
         "threshold": state.threshold,
-        "frame": state.processed_frames,
-        "source": state.last_source,
+        "frame": s.processed_frames,
+        "source": state.last_source if s is state else device,
         # Seconds since the last frame from any camera; None if none yet.
         # Lets an alert-only unit (e.g. the ESP32-C3) spot a dead camera.
-        "last_frame_age": (round(time.time() - state.last_frame_time, 1)
-                           if state.last_frame_time else None),
+        "last_frame_age": (round(time.time() - s.last_frame_time, 1)
+                           if s.last_frame_time else None),
     })
 
 
 @app.route('/events', methods=['GET'])
 def get_events():
-    return jsonify({"events": list(state.events)})
+    s = peek_session(request.args.get('device', ''))
+    return jsonify({"events": list(s.events)})
 
 
 @app.route('/events', methods=['DELETE'])
 def clear_events():
-    state.events.clear()
+    s = peek_session(request.args.get('device', ''))
+    s.events.clear()
     return jsonify({"success": True})
 
 
@@ -348,11 +391,14 @@ def telegram_test():
     """Send a test message and report whether Telegram accepted it."""
     if not telegram_configured():
         return jsonify({"ok": False, "error": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"}), 503
+    # Unlike the other GETs, this writes an outcome the caller will poll for
+    # afterward via /status, so it must create (not just peek at) the session.
+    s = get_or_create_session(request.args.get('device', ''))
     msg = f"Test message from drowsiness monitor ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
-    ok = send_telegram_alert(msg)
+    ok = send_telegram_alert(msg, session=s)
     body = {"ok": ok, "chat_id": CHAT_ID}
     if not ok:
-        body["error"] = state.telegram_last_error
+        body["error"] = s.telegram_last_error
     return jsonify(body), 200 if ok else 502
 
 
@@ -372,29 +418,29 @@ def latest_frame():
     return resp
 
 
-def update_alert_state(eyes_closed, now):
+def update_alert_state(session, eyes_closed, now):
     """Time-based state machine, so it behaves the same at 2 FPS (browser) or 3 FPS (ESP32)."""
-    state.processed_frames += 1
-    if now - state.last_frame_time > FRAME_GAP_RESET_SEC:
-        state.closed_since = None
-        state.consecutive_frames = 0
-    state.last_frame_time = now
+    session.processed_frames += 1
+    if now - session.last_frame_time > FRAME_GAP_RESET_SEC:
+        session.closed_since = None
+        session.consecutive_frames = 0
+    session.last_frame_time = now
 
     if eyes_closed:
-        state.consecutive_frames += 1
-        if state.closed_since is None:
-            state.closed_since = now
+        session.consecutive_frames += 1
+        if session.closed_since is None:
+            session.closed_since = now
     else:
-        state.consecutive_frames = 0
-        state.closed_since = None
+        session.consecutive_frames = 0
+        session.closed_since = None
 
-    closed_for = state.closed_for
+    closed_for = session.closed_for
     if closed_for >= state.drowsy_time_sec:
-        state.level = "critical"
+        session.level = "critical"
     elif closed_for >= state.drowsy_time_sec * state.warning_ratio:
-        state.level = "warning"
+        session.level = "warning"
     else:
-        state.level = "normal"
+        session.level = "normal"
 
 
 @app.route('/detect', methods=['POST'])
@@ -408,11 +454,17 @@ def detect():
             return jsonify({"error": "invalid image"}), 400
 
         now = time.time()
-        src = state.sources.setdefault(device_id, {"last_seen": now, "frames": 0})
-        src["last_seen"] = now
-        src["frames"] += 1
-        if device_id != 'browser':
-            state.latest_frames[device_id] = {"jpeg": img_bytes, "time": now}
+        session = get_or_create_session(device_id)
+        # Hardware (and anything not an isolated browser tab) also gets
+        # tracked in state.sources/latest_frames, same as before; an
+        # isolated browser tab renders its own camera locally and doesn't
+        # need a place in the Cameras list or a server-side frame echo.
+        if session is state:
+            src = state.sources.setdefault(device_id, {"last_seen": now, "frames": 0})
+            src["last_seen"] = now
+            src["frames"] += 1
+            if device_id != 'browser':
+                state.latest_frames[device_id] = {"jpeg": img_bytes, "time": now}
 
         h, w = frame.shape[:2]
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -421,19 +473,20 @@ def detect():
             result = landmarker.detect(mp_image)
 
         with state.lock:
-            state.last_source = device_id
+            if session is state:
+                state.last_source = device_id
             if not result.face_landmarks:
                 # No face: treat like eyes open for timing, but tell the client.
-                state.face_detected = False
-                state.current_ear = 0.0
-                state.eye_points = None
-                state.frame_size = [w, h]
-                update_alert_state(False, now)
+                session.face_detected = False
+                session.current_ear = 0.0
+                session.eye_points = None
+                session.frame_size = [w, h]
+                update_alert_state(session, False, now)
                 return jsonify({
                     "error": "no face detected",
                     "face": False,
                     "drowsy": False,
-                    "level": state.level,
+                    "level": session.level,
                     "ear": 0.0,
                     "threshold": state.threshold,
                     "closed_for": 0.0,
@@ -444,45 +497,45 @@ def detect():
             right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
             avg_ear = float((left_ear + right_ear) / 2.0)
 
-            state.face_detected = True
-            state.eye_points = {"left": eye_points(landmarks, LEFT_EYE),
-                                "right": eye_points(landmarks, RIGHT_EYE)}
-            state.frame_size = [w, h]
-            state.current_ear = avg_ear
+            session.face_detected = True
+            session.eye_points = {"left": eye_points(landmarks, LEFT_EYE),
+                                   "right": eye_points(landmarks, RIGHT_EYE)}
+            session.frame_size = [w, h]
+            session.current_ear = avg_ear
             eyes_closed = avg_ear < state.threshold
 
-            prev_level = state.level
-            update_alert_state(eyes_closed, now)
-            entered_critical = state.is_drowsy and prev_level != "critical"
+            prev_level = session.level
+            update_alert_state(session, eyes_closed, now)
+            entered_critical = session.is_drowsy and prev_level != "critical"
 
             # Telegram: once on entering critical, then at most every cooldown while it lasts.
             alert_queued = False
-            if (state.is_drowsy and state.telegram_enabled and telegram_configured()
-                    and (entered_critical or now - state.last_telegram_time >= state.telegram_cooldown)):
+            if (session.is_drowsy and state.telegram_enabled and telegram_configured()
+                    and (entered_critical or now - session.last_telegram_time >= state.telegram_cooldown)):
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 msg = (f"🚨 Drowsiness Detected!\n"
                        f"Time: {timestamp}\n"
                        f"Source: {device_id}\n"
-                       f"Eyes closed: {state.closed_for:.1f}s\n"
+                       f"Eyes closed: {session.closed_for:.1f}s\n"
                        f"EAR: {avg_ear:.3f}\n"
                        f"Threshold: {state.threshold:.2f}")
-                annotated = annotate_eyes(frame, state.eye_points, avg_ear, True)
+                annotated = annotate_eyes(frame, session.eye_points, avg_ear, True)
                 _, img_encoded = cv2.imencode('.jpg', annotated)
-                send_telegram_alert_async(msg, img_encoded.tobytes())
-                state.last_telegram_time = now
+                send_telegram_alert_async(msg, img_encoded.tobytes(), session=session)
+                session.last_telegram_time = now
                 alert_queued = True
 
             # Event log: on entering critical, then every 30s if it persists.
-            if state.is_drowsy:
-                last = state.events[0] if state.events else None
+            if session.is_drowsy:
+                last = session.events[0] if session.events else None
                 stale = last is None or (
                     datetime.now() - datetime.fromisoformat(last['timestamp'])
                 ).total_seconds() > 30
                 if entered_critical or stale:
-                    state.events.appendleft({
+                    session.events.appendleft({
                         "timestamp": datetime.now().isoformat(),
                         "ear": round(avg_ear, 3),
-                        "duration": round(state.closed_for, 1),
+                        "duration": round(session.closed_for, 1),
                         "source": device_id,
                         "alert_sent": alert_queued,
                         "type": "critical",
@@ -490,18 +543,18 @@ def detect():
 
             return jsonify({
                 "face": True,
-                "drowsy": state.is_drowsy,
+                "drowsy": session.is_drowsy,
                 "eyes_closed": bool(eyes_closed),
-                "level": state.level,
+                "level": session.level,
                 "ear": round(avg_ear, 3),
-                "eyes": state.eye_points,
-                "frame_size": state.frame_size,
+                "eyes": session.eye_points,
+                "frame_size": session.frame_size,
                 "threshold": state.threshold,
-                "closed_for": round(state.closed_for, 2),
+                "closed_for": round(session.closed_for, 2),
                 "drowsy_time": state.drowsy_time_sec,
                 # kept for older clients
                 "confidence": round(avg_ear, 3),
-                "consecutive_frames": state.consecutive_frames,
+                "consecutive_frames": session.consecutive_frames,
             })
 
     except Exception as e:

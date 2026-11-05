@@ -34,8 +34,10 @@ export function CameraPanel({
 }: Props) {
   const hardware = devices.filter((d) => d.id !== 'browser');
   const espOnline = hardware.some((d) => d.online);
-  // Only draw points that came from the camera being shown.
-  const pointsMatch = !!alert?.source && (source === 'browser') === (alert.source === 'browser');
+  // The alert data is already scoped to whichever camera is selected (the
+  // browser's own isolated session, or the shared ESP32-CAM state), so this
+  // just checks a frame has actually come in yet.
+  const pointsMatch = !!alert?.source;
 
   return (
     <section className="panel overflow-hidden">
@@ -90,7 +92,7 @@ export function CameraPanel({
 
       <div className={`relative aspect-video bg-ink border-4 transition-colors duration-300 ${tone[state].border}`}>
         {source === 'browser' ? (
-          <BrowserCamera running={running} espOnline={espOnline} />
+          <BrowserCamera running={running} />
         ) : (
           <Esp32View online={espOnline} device={hardware.find((d) => d.online)?.id} />
         )}
@@ -112,7 +114,7 @@ export function CameraPanel({
   );
 }
 
-function BrowserCamera({ running, espOnline }: { running: boolean; espOnline: boolean }) {
+function BrowserCamera({ running }: { running: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,11 +203,6 @@ function BrowserCamera({ running, espOnline }: { running: boolean; espOnline: bo
         />
       )}
       {error && <Overlay title="No camera" body={error} />}
-      {running && espOnline && (
-        <p className="absolute inset-x-3 top-3 rounded bg-warn px-3 py-1.5 text-xs text-white">
-          The ESP32-CAM is also sending frames. Both feeds mix into one reading; stop one of them.
-        </p>
-      )}
     </>
   );
 }

@@ -9,7 +9,7 @@ import { StatePanel } from './components/StatePanel';
 import { ToastMsg, Toasts } from './components/Toast';
 import { useAlarm } from './hooks/useAlarm';
 import { useMonitor } from './hooks/useMonitor';
-import { api } from './services/api';
+import { api, CLIENT_ID } from './services/api';
 import { Settings } from './types';
 import { displayState, tone } from './utils/display';
 
@@ -40,10 +40,16 @@ function writePref(key: string, value: unknown) {
 }
 
 export default function App() {
-  const { alert, status, events, online, latencyMs, history, stale, refreshSlow, setEvents } = useMonitor();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [source, setSource] = useState<Source>(() => readPref('source', 'browser'));
+  // This browser's own camera has its own isolated state (CLIENT_ID), so two
+  // visitors never see or hear each other's detection. The ESP32-CAM is one
+  // shared hardware camera everyone watching should see the same way, so it
+  // reads the server's shared/default state instead.
+  const { alert, status, events, online, latencyMs, history, stale, refreshSlow, setEvents } = useMonitor(
+    source === 'browser' ? CLIENT_ID : undefined,
+  );
   const [running, setRunning] = useState(false);
   const [soundOn, setSoundOn] = useState<boolean>(() => readPref('sound', true));
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
@@ -202,6 +208,7 @@ export default function App() {
             latencyMs={latencyMs}
             lastFrameAge={alert?.lastFrameAge ?? null}
             onToast={toast}
+            device={source === 'browser' ? CLIENT_ID : undefined}
           />
         </div>
         <div className="min-w-0 lg:col-span-12">
@@ -211,7 +218,8 @@ export default function App() {
           <EventLog
             events={events}
             onClear={async () => {
-              await api.clearEvents().catch(() => toast('Could not clear events', 'err'));
+              const device = source === 'browser' ? CLIENT_ID : undefined;
+              await api.clearEvents(device).catch(() => toast('Could not clear events', 'err'));
               setEvents([]);
               refreshSlow();
             }}
