@@ -35,5 +35,8 @@ COPY . .
 # Expose Flask port
 EXPOSE 8080
 
-# Run Flask
-CMD ["/app/.venv/bin/flask", "run", "--host=0.0.0.0", "--port=8080"]
+# One worker on purpose: the alert state lives in memory, so every request
+# (camera, alert unit, dashboard) must reach the same process. Threads let
+# them run at the same time.
+CMD ["/app/.venv/bin/gunicorn", "--workers", "1", "--threads", "8", "--timeout", "60", \
+     "--bind", "0.0.0.0:8080", "--access-logfile", "-", "app:app"]

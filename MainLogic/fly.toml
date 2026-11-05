@@ -11,10 +11,25 @@ primary_region = 'iad'
 [http_service]
   internal_port = 8080
   force_https = true
+  # Keep one machine running: a stopped machine takes several seconds to wake,
+  # and the camera would show NO SERVER meanwhile. Set to 0 to save money
+  # when you're not testing.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
+
+  [http_service.concurrency]
+    type = 'requests'
+    soft_limit = 20
+    hard_limit = 40
+
+  [[http_service.checks]]
+    grace_period = '60s'   # MediaPipe takes a while to load
+    interval = '30s'
+    method = 'GET'
+    path = '/status'
+    timeout = '5s'
 
 [[vm]]
   memory = '1gb'
