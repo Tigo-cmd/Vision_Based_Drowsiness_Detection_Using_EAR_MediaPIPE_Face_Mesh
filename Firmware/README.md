@@ -168,7 +168,7 @@ characters or more).
    `MUTED`. Then set `BENCH_TEST 0` and upload again.
 2. **Camera, no Wi-Fi.** In the camera's `config.h` set `BENCH_TEST 1`,
    upload, and open the Serial Monitor at 115200. Type `snap`; it should
-   print `Camera OK: 640x480 JPEG, ... bytes`, and the red LED blinks slowly.
+   print `Camera OK: 320x240 JPEG, ... bytes`, and the red LED blinks slowly.
    Then set `BENCH_TEST 0` and upload again.
 3. **Wi-Fi on both.** Each one starts in setup mode the first time. Join
    `DROWSY-CAM-xxxx` (password: your `SETUP_PIN`) and then

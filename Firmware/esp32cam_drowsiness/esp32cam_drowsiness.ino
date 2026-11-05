@@ -158,14 +158,18 @@ bool initCamera() {
   c.pixel_format = PIXFORMAT_JPEG;
   c.grab_mode = CAMERA_GRAB_LATEST;  // always send the newest frame, never a stale one
 
+  // QVGA either way: a face close to the dash still fills most of the frame,
+  // and the eyes only need to be a few pixels wide for the EAR math. A
+  // quarter the pixels of VGA means a quarter the JPEG to encode and upload,
+  // and MediaPipe runs noticeably faster on it server-side too.
   if (psramFound()) {
-    c.frame_size = FRAMESIZE_VGA;    // 640x480: enough detail around the eyes
-    c.jpeg_quality = 12;
+    c.frame_size = FRAMESIZE_QVGA;
+    c.jpeg_quality = 16;
     c.fb_count = 2;
     c.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
     c.frame_size = FRAMESIZE_QVGA;
-    c.jpeg_quality = 14;
+    c.jpeg_quality = 18;
     c.fb_count = 1;
     c.fb_location = CAMERA_FB_IN_DRAM;
   }
