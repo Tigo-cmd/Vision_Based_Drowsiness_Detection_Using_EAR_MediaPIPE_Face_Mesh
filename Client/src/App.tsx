@@ -1,140 +1,231 @@
-import { useEffect, useState } from 'react';
-import { Eye, AlertCircle, TrendingDown } from 'lucide-react';
-import { CameraFeed } from './components/CameraFeed';
-import { StatusCard } from './components/StatusCard';
+import { useCallback, useEffect, useState } from 'react';
+import { Settings as Gear, Volume2, VolumeX } from 'lucide-react';
+import { CameraPanel, Source } from './components/CameraPanel';
+import { EarChart } from './components/EarChart';
 import { EventLog } from './components/EventLog';
-import { SettingsPanel } from './components/SettingsPanel';
-import { SystemHealth } from './components/SystemHealth';
+import { HealthList } from './components/HealthList';
+import { SettingsDrawer } from './components/SettingsDrawer';
+import { StatePanel } from './components/StatePanel';
+import { ToastMsg, Toasts } from './components/Toast';
+import { useAlarm } from './hooks/useAlarm';
+import { useMonitor } from './hooks/useMonitor';
 import { api } from './services/api';
-import { AlertEvent, SystemSettings, SystemStatus } from './types';
-import { formatEAR } from './utils/format';
+import { Settings } from './types';
+import { displayState, tone } from './utils/display';
 
-function App() {
-  const [status, setStatus] = useState<SystemStatus>({
-    cameraActive: false,
-    telegramConnected: false,
-    telegramState: 'not_configured',
-    telegramError: null,
-    devices: [],
-    closedFor: 0,
-    currentEAR: 0,
-    alertState: 'normal',
-    lastUpdate: new Date().toISOString(),
-  });
-  const [events, setEvents] = useState<AlertEvent[]>([]);
-  const [settings, setSettings] = useState<SystemSettings>(api.getSettings());
-  const [showSettings, setShowSettings] = useState(false);
+const TITLES = {
+  normal: 'Awake',
+  warning: 'Eyes closing',
+  critical: 'DROWSY',
+  noface: 'No face',
+  idle: 'Not watching',
+  offline: 'Offline',
+  loading: 'Connecting',
+} as const;
 
-  useEffect(() => {
-    api.startSimulation();
+function readPref<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+}
+function writePref(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* private mode: ignore */
+  }
+}
 
-    const interval = setInterval(async () => {
-      const newStatus = await api.getStatus();
-      setStatus(newStatus);
+export default function App() {
+  const { alert, status, events, online, latencyMs, history, stale, refreshSlow, setEvents } = useMonitor();
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [drawer, setDrawer] = useState(false);
+  const [source, setSource] = useState<Source>(() => readPref('source', 'browser'));
+  const [running, setRunning] = useState(false);
+  const [soundOn, setSoundOn] = useState<boolean>(() => readPref('sound', true));
+  const [toasts, setToasts] = useState<ToastMsg[]>([]);
+  const [pendingThreshold, setPendingThreshold] = useState<number | null>(null);
 
-      const newEvents = await api.getEvents();
-      setEvents(newEvents);
-    }, 500);
+  const state = displayState(alert, online, stale);
+  useAlarm(alert && !stale ? alert.level : null, soundOn);
 
-    return () => {
-      clearInterval(interval);
-      api.stopSimulation();
-    };
+  const toast = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, text, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
   }, []);
 
-  const handleSaveSettings = async (newSettings: SystemSettings) => {
-    const updated = await api.updateSettings(newSettings);
-    setSettings(updated);
-  };
+  useEffect(() => {
+    api.settings().then(setSettings).catch(() => {});
+  }, [online]);
 
-  const handleClearEvents = async () => {
-    await api.clearEvents();
-    setEvents([]);
-  };
+  useEffect(() => writePref('source', source), [source]);
+  useEffect(() => writePref('sound', soundOn), [soundOn]);
+  useEffect(() => {
+    document.title = `${TITLES[state]} · Drowsiness Monitor`;
+  }, [state]);
 
-  const getAlertStatus = (): 'normal' | 'warning' | 'critical' => {
-    // Note: status.alertState from API is more accurate as it uses consecutive frames
-    return status.alertState;
-  };
+  // Stop the webcam when switching to the ESP32 view.
+  useEffect(() => {
+    if (source === 'esp32') setRunning(false);
+  }, [source]);
 
-  const alertStatus = getAlertStatus();
+  const saveSettings = useCallback(
+    async (next: Settings) => {
+      try {
+        await api.saveSettings(next);
+        setSettings(next);
+        toast('Settings saved');
+      } catch {
+        toast('Could not save settings', 'err');
+      }
+    },
+    [toast],
+  );
+
+  const setThreshold = useCallback(
+    async (v: number) => {
+      setPendingThreshold(v);
+      setSettings((s) => (s ? { ...s, earThreshold: v } : s));
+      try {
+        await api.saveSettings({ earThreshold: v });
+        toast(`Threshold set to ${v.toFixed(3)}`);
+      } catch {
+        toast('Could not save the threshold', 'err');
+        setPendingThreshold(null);
+      }
+    },
+    [toast],
+  );
+
+  // Clear the optimistic value once the server reports it.
+  useEffect(() => {
+    if (pendingThreshold != null && alert && Math.abs(alert.threshold - pendingThreshold) < 0.0005) {
+      setPendingThreshold(null);
+    }
+  }, [alert, pendingThreshold]);
+
+  const openSettings = useCallback(() => {
+    api.settings().then(setSettings).catch(() => {});
+    setDrawer(true);
+  }, []);
+
+  // Keyboard: Space start/stop, M sound, comma settings.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest('input, textarea, [role="slider"], [role="dialog"]') || e.metaKey || e.ctrlKey) return;
+      if (e.code === 'Space' && source === 'browser' && el.tagName !== 'BUTTON') {
+        e.preventDefault();
+        setRunning((r) => !r);
+      } else if (e.key === 'm' || e.key === 'M') {
+        setSoundOn((s) => !s);
+      } else if (e.key === ',') {
+        openSettings();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [source, openSettings]);
+
+  const threshold = pendingThreshold ?? alert?.threshold ?? settings?.earThreshold ?? 0.2;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="bg-gradient-to-r from-slate-900 to-slate-800 shadow-xl">
-        <div className="max-w-7xl mx-auto px-6 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-slate-700 rounded-xl">
-                <Eye size={32} className="text-white" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-white">
-                  Driver Drowsiness Monitor
-                </h1>
-                <p className="text-gray-300 text-sm">Real-time alertness detection system</p>
-              </div>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-30 border-b border-line bg-paper/90 backdrop-blur">
+        <div className="mx-auto flex max-w-[1360px] items-center gap-4 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden>
+              <rect width="32" height="32" rx="7" className="fill-ink" />
+              <path d="M5 16c3-5 7-7.5 11-7.5S24 11 27 16c-3 5-7 7.5-11 7.5S8 21 5 16z" fill="none" stroke="#f6f5f1" strokeWidth="2" />
+              <path
+                d="M11 16.5h10"
+                stroke="#f6f5f1"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                className={state === 'normal' ? 'opacity-0' : ''}
+              />
+              {state === 'normal' && <circle cx="16" cy="16" r="3.2" fill="#f6f5f1" />}
+            </svg>
+            <div className="leading-tight">
+              <p className="font-semibold">Drowsiness Monitor</p>
+              <p className="text-xs text-ink-faint">Eye aspect ratio, live</p>
             </div>
+          </div>
+
+          <div className="ml-auto flex items-center gap-1 sm:gap-2">
+            <span className="hidden items-center gap-2 rounded-full border border-line px-3 py-1 text-xs sm:flex">
+              <span className={`h-1.5 w-1.5 rounded-full ${tone[state].dot} ${state === 'critical' ? 'animate-flash' : ''}`} />
+              {online === false ? 'Server offline' : stale ? 'No camera' : 'Live'}
+            </span>
             <button
-              onClick={() => setShowSettings(!showSettings)}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${showSettings
-                ? 'bg-slate-600 text-white'
-                : 'bg-white text-slate-800 hover:bg-gray-100'
-                }`}
+              className="btn-ghost px-2"
+              onClick={() => setSoundOn((s) => !s)}
+              aria-label={soundOn ? 'Mute alarm sound (M)' : 'Turn alarm sound on (M)'}
+              title={soundOn ? 'Mute alarm sound (M)' : 'Turn alarm sound on (M)'}
             >
-              {showSettings ? 'Hide Settings' : 'Settings'}
+              {soundOn ? <Volume2 size={18} /> : <VolumeX size={18} />}
+            </button>
+            <button className="btn-ghost px-2" onClick={openSettings} aria-label="Settings (,)" title="Settings (,)">
+              <Gear size={18} />
             </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-          <StatusCard
-            title="Eye Aspect Ratio"
-            value={formatEAR(status.currentEAR)}
-            icon={Eye}
-            status={alertStatus}
-            subtitle={`Threshold: ${settings.earThreshold.toFixed(2)}`}
-          />
-          <StatusCard
-            title="Alert Status"
-            value={status.alertState.toUpperCase()}
-            icon={AlertCircle}
-            status={status.alertState}
-            subtitle={status.alertState === 'normal' ? 'Driver alert' : 'Attention required'}
-          />
-          <StatusCard
-            title="Recent Alerts"
-            value={events.length}
-            icon={TrendingDown}
-            status={events.length > 10 ? 'warning' : 'normal'}
-            subtitle="Total events logged"
+      <main className="mx-auto grid max-w-[1360px] gap-4 px-4 py-5 sm:px-6 lg:grid-cols-12 lg:gap-5">
+        <div className="min-w-0 lg:col-span-7">
+          <CameraPanel
+            source={source}
+            onSourceChange={setSource}
+            running={running}
+            onRunningChange={setRunning}
+            state={state}
+            devices={status?.devices ?? []}
           />
         </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
-            <CameraFeed alertState={status.alertState} />
-            <EventLog events={events} onClear={handleClearEvents} />
-          </div>
-
-          <div className="space-y-6">
-            <SystemHealth
-              cameraActive={status.cameraActive}
-              telegramState={status.telegramState}
-              telegramError={status.telegramError}
-              devices={status.devices}
-              lastUpdate={status.lastUpdate}
-            />
-            {showSettings && (
-              <SettingsPanel settings={settings} onSave={handleSaveSettings} />
-            )}
-          </div>
+        <div className="flex min-w-0 flex-col gap-4 lg:col-span-5 lg:gap-5">
+          <StatePanel state={state} alert={alert} />
+          <HealthList
+            status={status}
+            online={online}
+            latencyMs={latencyMs}
+            lastFrameAge={alert?.lastFrameAge ?? null}
+            onToast={toast}
+          />
         </div>
-      </div>
+        <div className="min-w-0 lg:col-span-12">
+          <EarChart history={history} threshold={threshold} onThresholdChange={setThreshold} />
+        </div>
+        <div className="min-w-0 lg:col-span-12">
+          <EventLog
+            events={events}
+            onClear={async () => {
+              await api.clearEvents().catch(() => toast('Could not clear events', 'err'));
+              setEvents([]);
+              refreshSlow();
+            }}
+          />
+        </div>
+      </main>
+
+      <footer className="mx-auto max-w-[1360px] px-4 pb-8 text-xs text-ink-faint sm:px-6">
+        <span className="kbd">Space</span> start/stop camera &nbsp; <span className="kbd">M</span> alarm sound &nbsp;{' '}
+        <span className="kbd">,</span> settings
+      </footer>
+
+      <SettingsDrawer
+        open={drawer}
+        onClose={() => setDrawer(false)}
+        settings={settings}
+        onSave={saveSettings}
+        soundOn={soundOn}
+        onSoundChange={setSoundOn}
+      />
+      <Toasts items={toasts} />
     </div>
   );
 }
-
-export default App;

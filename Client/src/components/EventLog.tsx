@@ -1,88 +1,88 @@
-import { AlertTriangle, Clock, Trash2 } from 'lucide-react';
+import { useState } from 'react';
 import { AlertEvent } from '../types';
-import { formatEAR, formatTimestamp, getAlertBadgeColor } from '../utils/format';
+import { fmtAgo, fmtTime } from '../utils/display';
 
-interface EventLogProps {
+interface Props {
   events: AlertEvent[];
-  onClear: () => void;
+  onClear: () => Promise<void>;
 }
 
-export function EventLog({ events, onClear }: EventLogProps) {
+export function EventLog({ events, onClear }: Props) {
+  const [confirming, setConfirming] = useState(false);
+
   return (
-    <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-      <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-slate-600">
-              <Clock size={20} className="text-white" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-white">Event Log</h2>
-              <p className="text-xs text-gray-300">{events.length} total events</p>
-            </div>
-          </div>
-          {events.length > 0 && (
-            <button
-              onClick={onClear}
-              className="flex items-center gap-2 px-3 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
-            >
-              <Trash2 size={16} />
+    <section className="panel flex min-h-0 flex-col">
+      <header className="flex items-baseline justify-between px-5 pt-4 pb-3">
+        <div>
+          <h2 className="font-semibold">Drowsy events</h2>
+          <p className="text-sm text-ink-soft">
+            {events.length === 0
+              ? 'None yet.'
+              : `${events.length} logged, latest ${fmtAgo(events[0].timestamp)}.`}
+          </p>
+        </div>
+        {events.length > 0 &&
+          (confirming ? (
+            <span className="flex items-center gap-1 text-sm">
+              <span className="text-ink-soft">Clear all?</span>
+              <button
+                className="btn-ghost text-crit"
+                onClick={async () => {
+                  await onClear();
+                  setConfirming(false);
+                }}
+              >
+                Clear
+              </button>
+              <button className="btn-ghost" onClick={() => setConfirming(false)}>
+                Keep
+              </button>
+            </span>
+          ) : (
+            <button className="btn-ghost" onClick={() => setConfirming(true)}>
               Clear
             </button>
-          )}
-        </div>
-      </div>
+          ))}
+      </header>
 
-      <div className="max-h-96 overflow-y-auto">
-        {events.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-            <AlertTriangle size={48} className="mb-4 opacity-50" />
-            <p className="text-lg font-medium">No events recorded</p>
-            <p className="text-sm mt-2">Alerts will appear here when detected</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-200">
-            {events.map((event) => (
-              <div
-                key={event.id}
-                className="px-6 py-4 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3 flex-1">
-                    <div className={`w-3 h-3 rounded-full mt-1 ${getAlertBadgeColor(event.alertType)}`}></div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={`text-sm font-semibold ${
-                          event.alertType === 'critical'
-                            ? 'text-red-600'
-                            : event.alertType === 'warning'
-                            ? 'text-amber-600'
-                            : 'text-emerald-600'
-                        }`}>
-                          {event.alertType.toUpperCase()}
-                        </span>
-                        <span className="text-xs text-gray-400">•</span>
-                        <span className="text-xs text-gray-500">
-                          {formatTimestamp(event.timestamp)}
-                        </span>
-                      </div>
-                      <div className="text-sm text-gray-700">
-                        EAR: <span className="font-mono font-semibold">{formatEAR(event.earValue)}</span>
-                        {event.duration > 0 && (
-                          <>
-                            <span className="text-gray-400 mx-2">•</span>
-                            Duration: <span className="font-semibold">{event.duration}s</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+      {events.length === 0 ? (
+        <p className="border-t border-line px-5 py-8 text-center text-sm text-ink-faint">
+          When the eyes stay closed past the alert duration, the event shows up here with how long it lasted.
+        </p>
+      ) : (
+        <div className="max-h-80 overflow-auto border-t border-line">
+          <table className="w-full whitespace-nowrap text-sm">
+            <thead className="sticky top-0 bg-panel text-left">
+              <tr className="border-b border-line">
+                <th className="label px-5 py-2 font-medium max-sm:px-3">Time</th>
+                <th className="label px-3 py-2 text-right font-medium">Closed</th>
+                <th className="label px-3 py-2 text-right font-medium">EAR</th>
+                <th className="label hidden px-3 py-2 font-medium sm:table-cell">Camera</th>
+                <th className="label px-5 py-2 font-medium">Telegram</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((e, i) => (
+                <tr key={e.id} className={`border-b border-line/60 ${i === 0 ? 'animate-rise' : ''}`}>
+                  <td className="px-5 py-2 font-mono tabular max-sm:px-3">{fmtTime(e.timestamp)}</td>
+                  <td className="px-3 py-2 text-right font-mono tabular">
+                    {e.duration ? `${e.duration.toFixed(1)} s` : '–'}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular">{e.ear.toFixed(3)}</td>
+                  <td className="hidden px-3 py-2 text-ink-soft sm:table-cell">{e.source}</td>
+                  <td className="px-5 py-2">
+                    {e.alertSent ? (
+                      <span className="text-ok">Sent</span>
+                    ) : (
+                      <span className="text-ink-faint">Not sent</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

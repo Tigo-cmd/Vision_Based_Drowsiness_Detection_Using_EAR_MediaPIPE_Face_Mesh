@@ -1,3 +1,28 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html { -webkit-font-smoothing: antialiased; }
+  body { @apply bg-paper text-ink font-sans; }
+  /* Live numbers shouldn't jitter as digits change. */
+  .tabular { font-variant-numeric: tabular-nums; }
+  :focus-visible { @apply outline-none ring-2 ring-ink ring-offset-2 ring-offset-paper; }
+}
+
+@layer components {
+  .panel { @apply bg-panel border border-line rounded-lg shadow-panel; }
+  .label { @apply text-[11px] font-medium uppercase tracking-[0.08em] text-ink-faint; }
+  .btn { @apply inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
+  .btn-primary { @apply btn bg-ink text-paper hover:bg-ink-soft; }
+  .btn-ghost { @apply btn text-ink-soft hover:bg-paper hover:text-ink; }
+  .btn-outline { @apply btn border border-line text-ink hover:bg-paper; }
+  .kbd { @apply inline-block rounded border border-line bg-paper px-1.5 font-mono text-[11px] text-ink-soft; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Range inputs in the ink colour */
+input[type='range'] { accent-color: #1b1d1f; }
