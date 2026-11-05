@@ -4,7 +4,9 @@
 #
 
 app = 'vision-based-drowsiness-detection-using-ear-mediapipe-face-mesh'
-primary_region = 'iad'
+# London: closer to West Africa (undersea cable routes) than iad (US-East),
+# which was adding most of the round-trip lag for a user there.
+primary_region = 'lhr'
 
 [build]
 
