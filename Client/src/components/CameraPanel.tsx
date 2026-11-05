@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, Cpu, Play, Square } from 'lucide-react';
+import { Camera, Cpu, ScanEye, Play, Square } from 'lucide-react';
 import { api } from '../services/api';
-import { DeviceInfo } from '../types';
+import { AlertState, DeviceInfo } from '../types';
 import { DisplayState, tone } from '../utils/display';
+import { EyeOverlay } from './EyeOverlay';
 
 export type Source = 'browser' | 'esp32';
 
@@ -13,13 +14,28 @@ interface Props {
   onRunningChange: (r: boolean) => void;
   state: DisplayState;
   devices: DeviceInfo[];
+  alert: AlertState | null;
+  landmarks: boolean;
+  onLandmarksChange: (on: boolean) => void;
 }
 
 const FRAME_EVERY_MS = 500;
 
-export function CameraPanel({ source, onSourceChange, running, onRunningChange, state, devices }: Props) {
+export function CameraPanel({
+  source,
+  onSourceChange,
+  running,
+  onRunningChange,
+  state,
+  devices,
+  alert,
+  landmarks,
+  onLandmarksChange,
+}: Props) {
   const hardware = devices.filter((d) => d.id !== 'browser');
   const espOnline = hardware.some((d) => d.online);
+  // Only draw points that came from the camera being shown.
+  const pointsMatch = !!alert?.source && (source === 'browser') === (alert.source === 'browser');
 
   return (
     <section className="panel overflow-hidden">
@@ -49,16 +65,27 @@ export function CameraPanel({ source, onSourceChange, running, onRunningChange, 
           ))}
         </div>
 
-        {source === 'browser' && (
+        <div className="flex items-center gap-1">
           <button
-            onClick={() => onRunningChange(!running)}
-            className={running ? 'btn-outline' : 'btn-primary'}
-            title="Space"
+            onClick={() => onLandmarksChange(!landmarks)}
+            aria-pressed={landmarks}
+            className={`btn ${landmarks ? 'bg-paper text-ink' : 'text-ink-faint hover:text-ink'}`}
+            title="Show the eye landmarks (L)"
           >
-            {running ? <Square size={14} /> : <Play size={14} />}
-            {running ? 'Stop' : 'Start'}
+            <ScanEye size={15} />
+            <span className="hidden sm:inline">Landmarks</span>
           </button>
-        )}
+          {source === 'browser' && (
+            <button
+              onClick={() => onRunningChange(!running)}
+              className={running ? 'btn-outline' : 'btn-primary'}
+              title="Space"
+            >
+              {running ? <Square size={14} /> : <Play size={14} />}
+              {running ? 'Stop' : 'Start'}
+            </button>
+          )}
+        </div>
       </header>
 
       <div className={`relative aspect-video bg-ink border-4 transition-colors duration-300 ${tone[state].border}`}>
@@ -66,6 +93,19 @@ export function CameraPanel({ source, onSourceChange, running, onRunningChange, 
           <BrowserCamera running={running} espOnline={espOnline} />
         ) : (
           <Esp32View online={espOnline} device={hardware.find((d) => d.online)?.id} />
+        )}
+        {landmarks && pointsMatch && (source === 'esp32' || running) && (
+          <EyeOverlay alert={alert} state={state} mirrored={source === 'browser'} />
+        )}
+        {landmarks && pointsMatch && alert?.eyes && (source === 'esp32' || running) && (
+          <div className="pointer-events-none absolute bottom-3 right-3 flex gap-3 rounded bg-black/60 px-2 py-1 text-[11px] text-white">
+            <span className="flex items-center gap-1">
+              <span className="h-0.5 w-3 bg-[#ffd23f]" /> vertical
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-0.5 w-3 bg-[#4fc3ff]" /> horizontal
+            </span>
+          </div>
         )}
       </div>
     </section>

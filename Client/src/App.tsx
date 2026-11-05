@@ -48,6 +48,7 @@ export default function App() {
   const [soundOn, setSoundOn] = useState<boolean>(() => readPref('sound', true));
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   const [pendingThreshold, setPendingThreshold] = useState<number | null>(null);
+  const [landmarks, setLandmarks] = useState<boolean>(() => readPref('landmarks', true));
 
   const state = displayState(alert, online, stale);
   useAlarm(alert && !stale ? alert.level : null, soundOn);
@@ -64,6 +65,7 @@ export default function App() {
 
   useEffect(() => writePref('source', source), [source]);
   useEffect(() => writePref('sound', soundOn), [soundOn]);
+  useEffect(() => writePref('landmarks', landmarks), [landmarks]);
   useEffect(() => {
     document.title = `${TITLES[state]} · Drowsiness Monitor`;
   }, [state]);
@@ -123,6 +125,8 @@ export default function App() {
         setRunning((r) => !r);
       } else if (e.key === 'm' || e.key === 'M') {
         setSoundOn((s) => !s);
+      } else if (e.key === 'l' || e.key === 'L') {
+        setLandmarks((v) => !v);
       } else if (e.key === ',') {
         openSettings();
       }
@@ -185,6 +189,9 @@ export default function App() {
             onRunningChange={setRunning}
             state={state}
             devices={status?.devices ?? []}
+            alert={alert}
+            landmarks={landmarks}
+            onLandmarksChange={setLandmarks}
           />
         </div>
         <div className="flex min-w-0 flex-col gap-4 lg:col-span-5 lg:gap-5">
@@ -213,7 +220,7 @@ export default function App() {
       </main>
 
       <footer className="mx-auto max-w-[1360px] px-4 pb-8 text-xs text-ink-faint sm:px-6">
-        <span className="kbd">Space</span> start/stop camera &nbsp; <span className="kbd">M</span> alarm sound &nbsp;{' '}
+        <span className="kbd">Space</span> start/stop camera &nbsp; <span className="kbd">M</span> alarm sound &nbsp; <span className="kbd">L</span> landmarks &nbsp;{' '}
         <span className="kbd">,</span> settings
       </footer>
 
