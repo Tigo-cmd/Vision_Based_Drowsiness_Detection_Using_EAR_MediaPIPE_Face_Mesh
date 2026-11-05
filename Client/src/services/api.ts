@@ -37,6 +37,8 @@ export const api = {
       frame: a.frame ?? 0,
       source: a.source ?? null,
       lastFrameAge: a.last_frame_age ?? null,
+      eyes: a.eyes ?? null,
+      frameSize: a.frame_size ?? null,
     };
   },
 

@@ -13,6 +13,15 @@ export interface AlertState {
   source: string | null;
   /** Seconds since the last frame from any camera; null if none yet. */
   lastFrameAge: number | null;
+  /** The 6 EAR landmarks per eye (p1..p6), normalised 0..1; null without a face. */
+  eyes: EyePoints | null;
+  /** Width and height of the analysed frame, in pixels. */
+  frameSize: [number, number] | null;
+}
+
+export interface EyePoints {
+  left: [number, number][];
+  right: [number, number][];
 }
 
 export interface DeviceInfo {

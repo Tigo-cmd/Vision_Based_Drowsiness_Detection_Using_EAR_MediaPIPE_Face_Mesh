@@ -54,6 +54,10 @@ class AppState:
         self.consecutive_frames = 0
         self.level = "normal"  # normal | warning | critical
         self.face_detected = False
+        # The 6 EAR landmarks per eye for the latest frame, normalised 0..1,
+        # so the dashboard can draw them over the video.
+        self.eye_points = None
+        self.frame_size = None
         # Frames fully analysed, so a logger can tell one frame from the next.
         self.processed_frames = 0
         self.last_source = None
@@ -109,6 +113,61 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
 def euclidean(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
+
+
+def eye_points(landmarks, eye_indices):
+    """The 6 EAR landmarks of one eye as normalised [x, y] pairs (p1..p6)."""
+    return [[round(landmarks[i].x, 4), round(landmarks[i].y, 4)] for i in eye_indices]
+
+
+def _draw_eye_marks(img, pts, colour, t, r):
+    """Outline p1..p6, the two vertical distances (yellow) and the horizontal one (blue), dots on top."""
+    cv2.polylines(img, [np.array(pts, np.int32)], True, colour, t, cv2.LINE_AA)
+    for a, b in ((1, 5), (2, 4)):
+        cv2.line(img, pts[a], pts[b], (0, 215, 255), t, cv2.LINE_AA)
+    cv2.line(img, pts[0], pts[3], (255, 200, 0), t, cv2.LINE_AA)
+    for pt in pts:
+        cv2.circle(img, pt, r, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(img, pt, r, colour, max(1, t // 2 + 1), cv2.LINE_AA)
+
+
+def annotate_eyes(frame, eyes, ear, drowsy):
+    """Draw the EAR landmarks for the Telegram photo.
+
+    On the frame: the 6 points per eye, the eye outline, and the distances the
+    EAR uses: p2-p6 and p3-p5 (vertical) and p1-p4 (horizontal). Top right: a
+    magnified inset of both eyes, redrawn at that size so it reads on a phone.
+    """
+    out = frame.copy()
+    h, w = out.shape[:2]
+    s = max(1, round(w / 640))
+    colour = (40, 50, 220) if drowsy else (90, 200, 60)   # BGR: red / green
+    px = {k: [(int(x * w), int(y * h)) for x, y in v] for k, v in eyes.items()}
+    for pts in px.values():
+        _draw_eye_marks(out, pts, colour, s, 2 * s)
+
+    xs = [x for pts in px.values() for x, _ in pts]
+    ys = [y for pts in px.values() for _, y in pts]
+    ew = max(xs) - min(xs)
+    x0, x1 = int(max(0, min(xs) - 0.25 * ew)), int(min(w, max(xs) + 0.25 * ew))
+    y0, y1 = int(max(0, min(ys) - 0.35 * ew)), int(min(h, max(ys) + 0.35 * ew))
+    if x1 - x0 > 4 and y1 - y0 > 4:
+        iw = int(w * 0.45)
+        k = iw / (x1 - x0)
+        ih = int((y1 - y0) * k)
+        if ih < h * 0.5:
+            inset = cv2.resize(frame[y0:y1, x0:x1], (iw, ih), interpolation=cv2.INTER_CUBIC)
+            for pts in px.values():
+                _draw_eye_marks(inset, [(int((x - x0) * k), int((y - y0) * k)) for x, y in pts],
+                                colour, 2 * s, 4 * s)
+            ox, oy = w - iw - 8 * s, 8 * s
+            out[oy:oy + ih, ox:ox + iw] = inset
+            cv2.rectangle(out, (ox - 1, oy - 1), (ox + iw, oy + ih), (255, 255, 255), 2 * s)
+
+    label = f"EAR {ear:.3f}"
+    for col, th in (((0, 0, 0), 4 * s), ((255, 255, 255), 2 * s)):
+        cv2.putText(out, label, (12 * s, 30 * s), cv2.FONT_HERSHEY_SIMPLEX, 0.8 * s, col, th, cv2.LINE_AA)
+    return out
 
 
 def compute_ear(landmarks, eye_indices, width, height):
@@ -228,6 +287,8 @@ def get_alert():
         "drowsy_time": state.drowsy_time_sec,
         "consecutive_frames": state.consecutive_frames,
         "face": state.face_detected,
+        "eyes": state.eye_points,
+        "frame_size": state.frame_size,
         "ear": round(state.current_ear, 3),
         "threshold": state.threshold,
         "frame": state.processed_frames,
@@ -365,6 +426,8 @@ def detect():
                 # No face: treat like eyes open for timing, but tell the client.
                 state.face_detected = False
                 state.current_ear = 0.0
+                state.eye_points = None
+                state.frame_size = [w, h]
                 update_alert_state(False, now)
                 return jsonify({
                     "error": "no face detected",
@@ -382,6 +445,9 @@ def detect():
             avg_ear = float((left_ear + right_ear) / 2.0)
 
             state.face_detected = True
+            state.eye_points = {"left": eye_points(landmarks, LEFT_EYE),
+                                "right": eye_points(landmarks, RIGHT_EYE)}
+            state.frame_size = [w, h]
             state.current_ear = avg_ear
             eyes_closed = avg_ear < state.threshold
 
@@ -400,7 +466,8 @@ def detect():
                        f"Eyes closed: {state.closed_for:.1f}s\n"
                        f"EAR: {avg_ear:.3f}\n"
                        f"Threshold: {state.threshold:.2f}")
-                _, img_encoded = cv2.imencode('.jpg', frame)
+                annotated = annotate_eyes(frame, state.eye_points, avg_ear, True)
+                _, img_encoded = cv2.imencode('.jpg', annotated)
                 send_telegram_alert_async(msg, img_encoded.tobytes())
                 state.last_telegram_time = now
                 alert_queued = True
@@ -427,6 +494,8 @@ def detect():
                 "eyes_closed": bool(eyes_closed),
                 "level": state.level,
                 "ear": round(avg_ear, 3),
+                "eyes": state.eye_points,
+                "frame_size": state.frame_size,
                 "threshold": state.threshold,
                 "closed_for": round(state.closed_for, 2),
                 "drowsy_time": state.drowsy_time_sec,
