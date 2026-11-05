@@ -1,16 +1,18 @@
-export interface AlertEvent {
-  id: string;
-  earValue: number;
-  alertType: 'normal' | 'warning' | 'critical';
-  timestamp: string;
-  duration: number;
-}
+export type Level = 'normal' | 'warning' | 'critical';
 
-export interface SystemSettings {
-  earThreshold: number;
-  alertDurationThreshold: number;
-  telegramEnabled: boolean;
-  notificationCooldown: number;
+/** GET /alert: the live state, updated after every analysed frame. */
+export interface AlertState {
+  level: Level;
+  drowsy: boolean;
+  closedFor: number;
+  drowsyTime: number;
+  face: boolean;
+  ear: number;
+  threshold: number;
+  frame: number;
+  source: string | null;
+  /** Seconds since the last frame from any camera; null if none yet. */
+  lastFrameAge: number | null;
 }
 
 export interface DeviceInfo {
@@ -22,14 +24,35 @@ export interface DeviceInfo {
 
 export type TelegramState = 'configured' | 'not_configured' | 'disabled' | 'error';
 
-export interface SystemStatus {
-  cameraActive: boolean;
-  telegramConnected: boolean;
-  telegramState: TelegramState;
+/** GET /status */
+export interface ServerStatus {
+  uptime: number;
+  cameraConnected: boolean;
+  telegram: TelegramState;
   telegramError: string | null;
+  telegramLastSentAt: string | null;
   devices: DeviceInfo[];
-  closedFor: number;
-  currentEAR: number;
-  alertState: 'normal' | 'warning' | 'critical';
-  lastUpdate: string;
+}
+
+export interface AlertEvent {
+  id: string;
+  timestamp: string;
+  ear: number;
+  duration: number;
+  source: string;
+  alertSent: boolean;
+}
+
+export interface Settings {
+  earThreshold: number;
+  drowsyTime: number;
+  telegramCooldown: number;
+  telegramEnabled: boolean;
+}
+
+/** One point on the EAR chart. */
+export interface Sample {
+  t: number;
+  ear: number | null; // null when no face
+  level: Level;
 }
