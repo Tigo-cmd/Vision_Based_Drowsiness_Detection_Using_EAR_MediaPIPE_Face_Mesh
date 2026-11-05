@@ -213,7 +213,10 @@ function Esp32View({ online, device }: { online: boolean; device?: string }) {
 
   useEffect(() => {
     if (!online) return;
-    const id = setInterval(() => setTick((t) => t + 1), 500);
+    // Faster than the ESP32's own ~400ms capture interval (FRAME_INTERVAL_MS),
+    // so a new frame is picked up soon after it lands instead of waiting out
+    // most of a 500ms timer on top of it.
+    const id = setInterval(() => setTick((t) => t + 1), 250);
     return () => clearInterval(id);
   }, [online]);
 
