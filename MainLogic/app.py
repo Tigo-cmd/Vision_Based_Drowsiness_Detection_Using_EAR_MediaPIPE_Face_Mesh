@@ -9,8 +9,8 @@ from datetime import datetime
 import threading
 import time
 import os
-import telegram
-import asyncio
+import queue
+import httpx
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -122,12 +122,28 @@ def compute_ear(landmarks, eye_indices, width, height):
     return (A + B) / (2.0 * C)
 
 
-async def _telegram_send(message, image_bytes=None):
-    async with telegram.Bot(token=BOT_TOKEN) as bot_client:
-        if image_bytes:
-            await bot_client.send_photo(chat_id=CHAT_ID, photo=image_bytes, caption=message)
-        else:
-            await bot_client.send_message(chat_id=CHAT_ID, text=message)
+# Telegram is called over its plain HTTPS API with httpx (already installed
+# as a dependency of python-telegram-bot). One reused client, IPv4 only, clear
+# timeouts. Cloud hosts often time out reaching api.telegram.org over IPv6.
+TELEGRAM_API = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+_tg_client = httpx.Client(
+    transport=httpx.HTTPTransport(local_address="0.0.0.0", retries=2),
+    timeout=httpx.Timeout(20.0, connect=10.0),
+)
+
+
+def _telegram_call(method, data, files=None):
+    """POST one Bot API method. Returns None on success, else an error string."""
+    try:
+        r = _tg_client.post(f"{TELEGRAM_API}/bot{BOT_TOKEN}/{method}", data=data, files=files)
+        body = r.json()
+        if r.status_code == 200 and body.get("ok"):
+            return None
+        return f"Telegram said: {body.get('description', r.status_code)}"
+    except httpx.TimeoutException:
+        return "Timed out reaching api.telegram.org"
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
 
 
 def send_telegram_alert(message, image_bytes=None):
@@ -136,26 +152,54 @@ def send_telegram_alert(message, image_bytes=None):
         state.telegram_last_ok = False
         state.telegram_last_error = "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"
         return False
-    try:
-        asyncio.run(_telegram_send(message, image_bytes))
+    t0 = time.time()
+    err = None
+    if image_bytes:
+        err = _telegram_call("sendPhoto", {"chat_id": CHAT_ID, "caption": message},
+                             {"photo": ("driver.jpg", image_bytes, "image/jpeg")})
+        if err:
+            # A photo upload is the part most likely to time out; the text alone
+            # still gets the warning through.
+            print(f"[Telegram] photo failed ({err}), sending text only")
+            err = _telegram_call("sendMessage", {"chat_id": CHAT_ID, "text": message})
+    else:
+        err = _telegram_call("sendMessage", {"chat_id": CHAT_ID, "text": message})
+
+    if err is None:
         state.telegram_last_ok = True
         state.telegram_last_error = None
         state.telegram_last_sent_at = datetime.now().isoformat()
-        print("[Telegram] Alert sent")
+        print(f"[Telegram] sent in {time.time() - t0:.1f}s")
         return True
-    except Exception as e:
-        state.telegram_last_ok = False
-        state.telegram_last_error = str(e)
-        print(f"[Telegram] Failed to send alert: {e}")
-        traceback.print_exc()
-        return False
+    state.telegram_last_ok = False
+    state.telegram_last_error = err
+    print(f"[Telegram] failed after {time.time() - t0:.1f}s: {err}")
+    return False
+
+
+# One background sender. Alerts wait in a short queue; if Telegram is slow and
+# the queue is full, new alerts are dropped instead of piling up threads that
+# would compete with detection for CPU.
+_tg_queue = queue.Queue(maxsize=3)
+
+
+def _telegram_worker():
+    while True:
+        message, image_bytes = _tg_queue.get()
+        send_telegram_alert(message, image_bytes)
+
+
+threading.Thread(target=_telegram_worker, daemon=True, name="telegram").start()
 
 
 def send_telegram_alert_async(message, image_bytes=None):
-    """Fire-and-forget so /detect (and the ESP32 waiting on it) isn't held up."""
-    threading.Thread(
-        target=send_telegram_alert, args=(message, image_bytes), daemon=True
-    ).start()
+    """Hand the alert to the background sender; never blocks /detect."""
+    try:
+        _tg_queue.put_nowait((message, image_bytes))
+        return True
+    except queue.Full:
+        print("[Telegram] sender busy, alert dropped")
+        return False
 
 
 def telegram_status():
@@ -401,9 +445,8 @@ def detect():
                        f"EAR: {avg_ear:.3f}\n"
                        f"Threshold: {state.threshold:.2f}")
                 _, img_encoded = cv2.imencode('.jpg', frame)
-                send_telegram_alert_async(msg, img_encoded.tobytes())
+                alert_queued = send_telegram_alert_async(msg, img_encoded.tobytes())
                 state.last_telegram_time = now
-                alert_queued = True
 
             # Event log: on entering critical, then every 30s if it persists.
             if state.is_drowsy:

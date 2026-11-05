@@ -5,5 +5,5 @@ flask-cors==6.0.5
 opencv-python-headless==5.0.0.93
 numpy==2.5.4
 mediapipe==1.2.0
-python-telegram-bot==22.8
+httpx==0.28.1
 gunicorn==26.2.0
