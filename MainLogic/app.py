@@ -443,120 +443,124 @@ def update_alert_state(session, eyes_closed, now):
         session.level = "normal"
 
 
+def process_frame(img_bytes, device_id):
+    """Decode one JPEG and run full detection for device_id: EAR math, alert
+    state, Telegram dispatch, event logging. Returns (payload, status_code).
+    Used by both the /detect route (frame pushed by hardware/browser) and the
+    local stream puller thread (frame pulled from a camera's /stream)."""
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return {"error": "invalid image"}, 400
+
+    now = time.time()
+    session = get_or_create_session(device_id)
+    # Hardware (and anything not an isolated browser tab) also gets tracked
+    # in state.sources/latest_frames; an isolated browser tab renders its own
+    # camera locally and doesn't need a place in the Cameras list.
+    if session is state:
+        src = state.sources.setdefault(device_id, {"last_seen": now, "frames": 0})
+        src["last_seen"] = now
+        src["frames"] += 1
+        if device_id != 'browser':
+            state.latest_frames[device_id] = {"jpeg": img_bytes, "time": now}
+
+    h, w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    with landmarker_lock:
+        result = landmarker.detect(mp_image)
+
+    with state.lock:
+        if session is state:
+            state.last_source = device_id
+        if not result.face_landmarks:
+            session.face_detected = False
+            session.current_ear = 0.0
+            session.eye_points = None
+            session.frame_size = [w, h]
+            update_alert_state(session, False, now)
+            return {
+                "error": "no face detected",
+                "face": False,
+                "drowsy": False,
+                "level": session.level,
+                "ear": 0.0,
+                "threshold": state.threshold,
+                "closed_for": 0.0,
+            }, 200
+
+        landmarks = result.face_landmarks[0]
+        left_ear = compute_ear(landmarks, LEFT_EYE, w, h)
+        right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
+        avg_ear = float((left_ear + right_ear) / 2.0)
+
+        session.face_detected = True
+        session.eye_points = {"left": eye_points(landmarks, LEFT_EYE),
+                               "right": eye_points(landmarks, RIGHT_EYE)}
+        session.frame_size = [w, h]
+        session.current_ear = avg_ear
+        eyes_closed = avg_ear < state.threshold
+
+        prev_level = session.level
+        update_alert_state(session, eyes_closed, now)
+        entered_critical = session.is_drowsy and prev_level != "critical"
+
+        alert_queued = False
+        if (session.is_drowsy and state.telegram_enabled and telegram_configured()
+                and (entered_critical or now - session.last_telegram_time >= state.telegram_cooldown)):
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            msg = (f"🚨 Drowsiness Detected!\n"
+                   f"Time: {timestamp}\n"
+                   f"Source: {device_id}\n"
+                   f"Eyes closed: {session.closed_for:.1f}s\n"
+                   f"EAR: {avg_ear:.3f}\n"
+                   f"Threshold: {state.threshold:.2f}")
+            annotated = annotate_eyes(frame, session.eye_points, avg_ear, True)
+            _, img_encoded = cv2.imencode('.jpg', annotated)
+            send_telegram_alert_async(msg, img_encoded.tobytes(), session=session)
+            session.last_telegram_time = now
+            alert_queued = True
+
+        if session.is_drowsy:
+            last = session.events[0] if session.events else None
+            stale = last is None or (
+                datetime.now() - datetime.fromisoformat(last['timestamp'])
+            ).total_seconds() > 30
+            if entered_critical or stale:
+                session.events.appendleft({
+                    "timestamp": datetime.now().isoformat(),
+                    "ear": round(avg_ear, 3),
+                    "duration": round(session.closed_for, 1),
+                    "source": device_id,
+                    "alert_sent": alert_queued,
+                    "type": "critical",
+                })
+
+        return {
+            "face": True,
+            "drowsy": session.is_drowsy,
+            "eyes_closed": bool(eyes_closed),
+            "level": session.level,
+            "ear": round(avg_ear, 3),
+            "eyes": session.eye_points,
+            "frame_size": session.frame_size,
+            "threshold": state.threshold,
+            "closed_for": round(session.closed_for, 2),
+            "drowsy_time": state.drowsy_time_sec,
+            # kept for older clients
+            "confidence": round(avg_ear, 3),
+            "consecutive_frames": session.consecutive_frames,
+        }, 200
+
+
 @app.route('/detect', methods=['POST'])
 def detect():
     try:
         device_id = request.headers.get('X-Device-Id', 'browser')[:64]
         img_bytes = request.get_data()
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None:
-            return jsonify({"error": "invalid image"}), 400
-
-        now = time.time()
-        session = get_or_create_session(device_id)
-        # Hardware (and anything not an isolated browser tab) also gets
-        # tracked in state.sources/latest_frames, same as before; an
-        # isolated browser tab renders its own camera locally and doesn't
-        # need a place in the Cameras list or a server-side frame echo.
-        if session is state:
-            src = state.sources.setdefault(device_id, {"last_seen": now, "frames": 0})
-            src["last_seen"] = now
-            src["frames"] += 1
-            if device_id != 'browser':
-                state.latest_frames[device_id] = {"jpeg": img_bytes, "time": now}
-
-        h, w = frame.shape[:2]
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        with landmarker_lock:
-            result = landmarker.detect(mp_image)
-
-        with state.lock:
-            if session is state:
-                state.last_source = device_id
-            if not result.face_landmarks:
-                # No face: treat like eyes open for timing, but tell the client.
-                session.face_detected = False
-                session.current_ear = 0.0
-                session.eye_points = None
-                session.frame_size = [w, h]
-                update_alert_state(session, False, now)
-                return jsonify({
-                    "error": "no face detected",
-                    "face": False,
-                    "drowsy": False,
-                    "level": session.level,
-                    "ear": 0.0,
-                    "threshold": state.threshold,
-                    "closed_for": 0.0,
-                })
-
-            landmarks = result.face_landmarks[0]
-            left_ear = compute_ear(landmarks, LEFT_EYE, w, h)
-            right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
-            avg_ear = float((left_ear + right_ear) / 2.0)
-
-            session.face_detected = True
-            session.eye_points = {"left": eye_points(landmarks, LEFT_EYE),
-                                   "right": eye_points(landmarks, RIGHT_EYE)}
-            session.frame_size = [w, h]
-            session.current_ear = avg_ear
-            eyes_closed = avg_ear < state.threshold
-
-            prev_level = session.level
-            update_alert_state(session, eyes_closed, now)
-            entered_critical = session.is_drowsy and prev_level != "critical"
-
-            # Telegram: once on entering critical, then at most every cooldown while it lasts.
-            alert_queued = False
-            if (session.is_drowsy and state.telegram_enabled and telegram_configured()
-                    and (entered_critical or now - session.last_telegram_time >= state.telegram_cooldown)):
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                msg = (f"🚨 Drowsiness Detected!\n"
-                       f"Time: {timestamp}\n"
-                       f"Source: {device_id}\n"
-                       f"Eyes closed: {session.closed_for:.1f}s\n"
-                       f"EAR: {avg_ear:.3f}\n"
-                       f"Threshold: {state.threshold:.2f}")
-                annotated = annotate_eyes(frame, session.eye_points, avg_ear, True)
-                _, img_encoded = cv2.imencode('.jpg', annotated)
-                send_telegram_alert_async(msg, img_encoded.tobytes(), session=session)
-                session.last_telegram_time = now
-                alert_queued = True
-
-            # Event log: on entering critical, then every 30s if it persists.
-            if session.is_drowsy:
-                last = session.events[0] if session.events else None
-                stale = last is None or (
-                    datetime.now() - datetime.fromisoformat(last['timestamp'])
-                ).total_seconds() > 30
-                if entered_critical or stale:
-                    session.events.appendleft({
-                        "timestamp": datetime.now().isoformat(),
-                        "ear": round(avg_ear, 3),
-                        "duration": round(session.closed_for, 1),
-                        "source": device_id,
-                        "alert_sent": alert_queued,
-                        "type": "critical",
-                    })
-
-            return jsonify({
-                "face": True,
-                "drowsy": session.is_drowsy,
-                "eyes_closed": bool(eyes_closed),
-                "level": session.level,
-                "ear": round(avg_ear, 3),
-                "eyes": session.eye_points,
-                "frame_size": session.frame_size,
-                "threshold": state.threshold,
-                "closed_for": round(session.closed_for, 2),
-                "drowsy_time": state.drowsy_time_sec,
-                # kept for older clients
-                "confidence": round(avg_ear, 3),
-                "consecutive_frames": session.consecutive_frames,
-            })
-
+        payload, status = process_frame(img_bytes, device_id)
+        return jsonify(payload), status
     except Exception as e:
         print("[ERROR] in /detect:", e)
         traceback.print_exc()
