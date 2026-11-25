@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Cpu, ScanEye, Play, Square } from 'lucide-react';
 import { api } from '../services/api';
-import { AlertState, DeviceInfo } from '../types';
+import { AlertState, DeviceInfo, LocalCameraInfo } from '../types';
 import { DisplayState, tone } from '../utils/display';
 import { EyeOverlay } from './EyeOverlay';
 
@@ -17,6 +17,9 @@ interface Props {
   alert: AlertState | null;
   landmarks: boolean;
   onLandmarksChange: (on: boolean) => void;
+  localCamera: LocalCameraInfo | null;
+  onLocalCameraChange: (info: LocalCameraInfo) => void;
+  toast: (text: string, kind?: 'ok' | 'err') => void;
 }
 
 const FRAME_EVERY_MS = 500;
@@ -31,6 +34,9 @@ export function CameraPanel({
   alert,
   landmarks,
   onLandmarksChange,
+  localCamera,
+  onLocalCameraChange,
+  toast,
 }: Props) {
   const hardware = devices.filter((d) => d.id !== 'browser');
   const espOnline = hardware.some((d) => d.online);
@@ -89,6 +95,10 @@ export function CameraPanel({
           )}
         </div>
       </header>
+
+      {source === 'esp32' && localCamera?.available && (
+        <LocalCameraBar camera={localCamera} onChange={onLocalCameraChange} toast={toast} />
+      )}
 
       <div className={`relative aspect-video bg-ink border-4 transition-colors duration-300 ${tone[state].border}`}>
         {source === 'browser' ? (
@@ -249,6 +259,53 @@ function Overlay({ title, body }: { title: string; body: string }) {
     <div className="absolute inset-0 flex flex-col items-center justify-center px-8 text-center">
       <p className="font-medium text-paper">{title}</p>
       {body && <p className="mt-1 max-w-sm text-sm text-paper/60">{body}</p>}
+    </div>
+  );
+}
+
+function LocalCameraBar({
+  camera,
+  onChange,
+  toast,
+}: {
+  camera: LocalCameraInfo;
+  onChange: (info: LocalCameraInfo) => void;
+  toast: (text: string, kind?: 'ok' | 'err') => void;
+}) {
+  const [url, setUrl] = useState(camera.cameraStreamUrl ?? '');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setUrl(camera.cameraStreamUrl ?? '');
+  }, [camera.cameraStreamUrl]);
+
+  const save = async () => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    try {
+      const info = await api.setLocalCamera(trimmed);
+      onChange(info);
+      toast('Camera stream updated');
+    } catch {
+      toast('Could not update the camera stream', 'err');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 border-b border-line bg-paper px-4 py-2 text-sm">
+      <span className="text-ink-faint">Camera stream</span>
+      <input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="http://192.168.1.42/stream"
+        className="flex-1 rounded border border-line bg-panel px-2 py-1 font-mono text-xs"
+      />
+      <button onClick={save} disabled={saving} className="btn-outline px-3 py-1 text-xs">
+        {saving ? 'Saving…' : 'Save'}
+      </button>
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { ToastMsg, Toasts } from './components/Toast';
 import { useAlarm } from './hooks/useAlarm';
 import { useMonitor } from './hooks/useMonitor';
 import { api, CLIENT_ID } from './services/api';
-import { Settings } from './types';
+import { LocalCameraInfo, Settings } from './types';
 import { displayState, tone } from './utils/display';
 
 const TITLES = {
@@ -55,6 +55,7 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   const [pendingThreshold, setPendingThreshold] = useState<number | null>(null);
   const [landmarks, setLandmarks] = useState<boolean>(() => readPref('landmarks', true));
+  const [localCamera, setLocalCamera] = useState<LocalCameraInfo | null>(null);
 
   const state = displayState(alert, online, stale);
   useAlarm(alert && !stale ? alert.level : null, soundOn);
@@ -68,6 +69,10 @@ export default function App() {
   useEffect(() => {
     api.settings().then(setSettings).catch(() => {});
   }, [online]);
+
+  useEffect(() => {
+    api.getLocalCamera().then(setLocalCamera).catch(() => {});
+  }, []);
 
   useEffect(() => writePref('source', source), [source]);
   useEffect(() => writePref('sound', soundOn), [soundOn]);
@@ -198,6 +203,9 @@ export default function App() {
             alert={alert}
             landmarks={landmarks}
             onLandmarksChange={setLandmarks}
+            localCamera={localCamera}
+            onLocalCameraChange={setLocalCamera}
+            toast={toast}
           />
         </div>
         <div className="flex min-w-0 flex-col gap-4 lg:col-span-5 lg:gap-5">

@@ -1,4 +1,4 @@
-import { AlertEvent, AlertState, ServerStatus, Settings } from '../types';
+import { AlertEvent, AlertState, LocalCameraInfo, ServerStatus, Settings } from '../types';
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ??
@@ -148,5 +148,27 @@ export const api = {
     const q = new URLSearchParams({ t: String(bust) });
     if (device) q.set('device', device);
     return `${API_BASE_URL}/frame/latest?${q}`;
+  },
+
+  async getLocalCamera(): Promise<LocalCameraInfo> {
+    const r = await request<any>('/local/camera');
+    return {
+      available: !!r.available,
+      cameraStreamUrl: r.camera_stream_url ?? null,
+      cameraDeviceId: r.camera_device_id ?? null,
+    };
+  },
+
+  async setLocalCamera(url: string): Promise<LocalCameraInfo> {
+    const r = await request<any>('/local/camera', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ camera_stream_url: url }),
+    });
+    return {
+      available: !!r.available,
+      cameraStreamUrl: r.camera_stream_url ?? null,
+      cameraDeviceId: r.camera_device_id ?? null,
+    };
   },
 };

@@ -65,3 +65,12 @@ export interface Sample {
   ear: number | null; // null when no face
   level: Level;
 }
+
+/** GET/POST /local/camera - only meaningful when the backend is running
+ * locally with a camera puller active; always `available: false` on the
+ * Fly.io deployment. */
+export interface LocalCameraInfo {
+  available: boolean;
+  cameraStreamUrl: string | null;
+  cameraDeviceId: string | null;
+}
