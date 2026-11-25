@@ -197,6 +197,34 @@ Serial commands on the alert unit: `demo` (run the sequence once, any time),
 | Alert unit on an ESP32-CAM board | AI Thinker ESP32-CAM | Partition **Huge APP (3MB No OTA)** |
 | Alert unit on a C3 | ESP32C3 Dev Module | USB CDC On Boot **Enabled**, Partition **Huge APP (3MB No OTA)** |
 
+## Running fully local (lower latency than the cloud)
+
+If the cloud round-trip is too slow for your network, you can run the exact
+same backend and dashboard on a Windows PC on the camera's own Wi-Fi
+network instead. The camera's push-to-cloud behavior (and Telegram alerts)
+keeps working unmodified the whole time - this is additive, not a
+replacement.
+
+1. The camera board already serves a live MJPEG stream at
+   `http://<camera-ip>/stream` once it's on Wi-Fi - no setup needed on the
+   camera's side. Find its IP from your router's device list.
+2. On a Windows PC on the same Wi-Fi, run `setup_local.ps1` from the repo
+   root (right-click → Run with PowerShell, or
+   `powershell -ExecutionPolicy Bypass -File setup_local.ps1` from a
+   terminal). It tells you exactly what to install if Python or Node.js is
+   missing, then asks for the camera's IP once and starts both the backend
+   and the dashboard.
+3. Open the dashboard URL it prints. The local backend pulls frames
+   straight from the camera's `/stream` over your own Wi-Fi - no cloud
+   round-trip in that path at all.
+4. If you also run a physical alert unit board, double-reset it into setup
+   mode and set its **Server URL** field (on the same Wi-Fi setup page used
+   for passwords) to this PC's LAN IP and port 8000, e.g.
+   `http://192.168.1.50:8000`. Leave it as the Fly.dev URL to keep the alert
+   unit on the cloud path instead.
+5. Re-run `setup_local.ps1 -ChangeCamera` any time you want to point it at
+   a different camera IP.
+
 ## Things to know
 
 - **Latency.** Each frame goes over TLS to fly.dev and back, usually 300–800 ms.
