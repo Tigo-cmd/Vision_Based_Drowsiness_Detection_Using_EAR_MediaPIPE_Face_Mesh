@@ -88,7 +88,7 @@ if ($NeedsCameraPrompt) {
 
 Write-Host "== Starting backend and frontend ==" -ForegroundColor Cyan
 $BackendProc = Start-Process -FilePath $VenvPython -ArgumentList "app.py" -WorkingDirectory $BackendDir -PassThru -WindowStyle Normal
-$FrontendProc = Start-Process -FilePath "npm" -ArgumentList "run", "dev" -WorkingDirectory $FrontendDir -PassThru -WindowStyle Normal
+$FrontendProc = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev" -WorkingDirectory $FrontendDir -PassThru -WindowStyle Normal
 
 Write-Host ""
 Write-Host "Backend running (PID $($BackendProc.Id)), frontend running (PID $($FrontendProc.Id))." -ForegroundColor Green
