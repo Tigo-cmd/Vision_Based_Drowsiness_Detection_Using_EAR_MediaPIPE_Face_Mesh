@@ -567,12 +567,42 @@ def detect():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/local/camera', methods=['GET'])
+def get_local_camera():
+    m = getattr(app, 'local_stream_manager', None)
+    if not m:
+        return jsonify({"available": False, "camera_stream_url": None, "camera_device_id": None})
+    return jsonify({
+        "available": m.available,
+        "camera_stream_url": m.camera_stream_url,
+        "camera_device_id": m.camera_device_id,
+    })
+
+
+@app.route('/local/camera', methods=['POST'])
+def set_local_camera():
+    m = getattr(app, 'local_stream_manager', None)
+    if not m:
+        return jsonify({"error": "local stream mode is not available on this server"}), 400
+    data = request.get_json(force=True) or {}
+    url = (data.get('camera_stream_url') or '').strip()
+    if not url:
+        return jsonify({"error": "camera_stream_url is required"}), 400
+    device_id = (data.get('camera_device_id') or 'local-cam').strip()
+    m.restart(url, device_id)
+    return jsonify({
+        "available": True,
+        "camera_stream_url": m.camera_stream_url,
+        "camera_device_id": m.camera_device_id,
+    })
+
+
 if __name__ == '__main__':
     # WERKZEUG_RUN_MAIN is only 'true' in the process that actually serves
     # requests under the debug reloader - the watcher process that forks it
     # also executes this block, and starting the puller there would run it
     # against a copy of `state` nothing ever answers requests from.
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        from local_stream import start_puller_thread
-        start_puller_thread(process_frame)
+        from local_stream import LocalStreamManager
+        app.local_stream_manager = LocalStreamManager(process_frame)
     app.run(host='0.0.0.0', port=8000, debug=True)
