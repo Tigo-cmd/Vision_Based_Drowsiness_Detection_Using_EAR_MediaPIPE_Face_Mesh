@@ -21,7 +21,7 @@ def load_local_config():
     Windows local setup script)."""
     if not os.path.exists(LOCAL_CONFIG_PATH):
         return None
-    with open(LOCAL_CONFIG_PATH) as f:
+    with open(LOCAL_CONFIG_PATH, encoding='utf-8-sig') as f:
         return json.load(f)
 
 
@@ -44,8 +44,8 @@ def _iter_mjpeg_frames_from_reader(reader, chunk_size=4096):
 
 
 def _iter_mjpeg_frames(stream_url, chunk_size=4096):
-    reader = urllib.request.urlopen(stream_url, timeout=10)
-    yield from _iter_mjpeg_frames_from_reader(reader, chunk_size)
+    with urllib.request.urlopen(stream_url, timeout=10) as reader:
+        yield from _iter_mjpeg_frames_from_reader(reader, chunk_size)
 
 
 def run_puller(stream_url, device_id, process_frame_fn, stop_event):
