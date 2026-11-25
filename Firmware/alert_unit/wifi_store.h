@@ -80,4 +80,20 @@ inline void disarmDoubleReset() {
   p.end();
 }
 
+// ---- Server URL: changeable from the setup page, same as Wi-Fi ----
+inline String loadServerUrl(const String &fallback) {
+  Preferences p;
+  p.begin("cfg", true);
+  String url = p.getString("server", "");
+  p.end();
+  return url.length() ? url : fallback;
+}
+
+inline void saveServerUrl(const String &url) {
+  Preferences p;
+  p.begin("cfg", false);
+  p.putString("server", url);
+  p.end();
+}
+
 }  // namespace wifistore

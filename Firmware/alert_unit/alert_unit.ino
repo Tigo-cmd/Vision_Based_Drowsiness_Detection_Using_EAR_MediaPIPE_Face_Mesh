@@ -60,6 +60,7 @@ int lastHttpCode = 0;
 
 WiFiClientSecure tls;
 HTTPClient http;
+String serverBase;  // set in setup() from NVS, falling back to API_BASE
 
 // Bench test: while demoUntil is in the future, the unit plays a fixed
 // sequence instead of using the server.
@@ -179,7 +180,7 @@ void drawScreen() {
 void poll() {
   http.setReuse(true);  // keep the TLS session open between polls
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.begin(tls, String(API_BASE) + "/alert");
+  http.begin(tls, serverBase + "/alert");
   int code = http.GET();
   lastHttpCode = code;
   if (code == 200) {
@@ -285,6 +286,9 @@ void handleRoot() {
              "<label>Password</label><input name=pass type=password>"
              "<label class=small><input type=checkbox name=skip style='width:auto'> "
              "Save without testing (tick this if the network is this phone's own hotspot)</label>"
+             "<label>Server URL</label><input name=server value=\"" + htmlEscape(serverBase) +
+             "\" placeholder=\"https://... or http://192.168.x.x:8000\">"
+             "<label class=small>Leave as-is to keep using the same server.</label>"
              "<button>Save</button></form>";
   web->send(200, "text/html", page(b));
 }
@@ -293,6 +297,12 @@ void handleSave() {
   pendingSsid = web->arg("ssid");
   pendingPass = web->arg("pass");
   pendingSsid.trim();
+  String server = web->arg("server");
+  server.trim();
+  if (server.length()) {
+    wifistore::saveServerUrl(server);
+    serverBase = server;
+  }
   if (pendingSsid.isEmpty()) {
     web->sendHeader("Location", "/");
     web->send(302);
@@ -523,6 +533,7 @@ void setup() {
 
 
   tls.setInsecure();  // see the TLS note in Firmware/README.md
+  serverBase = wifistore::loadServerUrl(API_BASE);
   if (!connectSavedWifi()) {
     requestSetupOnNextBoot();
     delay(200);
