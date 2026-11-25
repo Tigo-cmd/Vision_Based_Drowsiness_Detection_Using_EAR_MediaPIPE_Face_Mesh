@@ -568,4 +568,11 @@ def detect():
 
 
 if __name__ == '__main__':
+    # WERKZEUG_RUN_MAIN is only 'true' in the process that actually serves
+    # requests under the debug reloader - the watcher process that forks it
+    # also executes this block, and starting the puller there would run it
+    # against a copy of `state` nothing ever answers requests from.
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        from local_stream import start_puller_thread
+        start_puller_thread(process_frame)
     app.run(host='0.0.0.0', port=8000, debug=True)
