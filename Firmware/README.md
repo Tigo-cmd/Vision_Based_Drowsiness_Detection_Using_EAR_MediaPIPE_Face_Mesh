@@ -207,7 +207,10 @@ replacement.
 
 1. The camera board already serves a live MJPEG stream at
    `http://<camera-ip>/stream` once it's on Wi-Fi - no setup needed on the
-   camera's side. Find its IP from your router's device list.
+   camera's side, as long as it's been flashed with the current
+   `esp32cam_drowsiness` firmware (the `/stream` route is new in this
+   branch; older firmware won't have it). Find its IP from your router's
+   device list.
 2. On a Windows PC on the same Wi-Fi, run `setup_local.ps1` from the repo
    root (right-click → Run with PowerShell, or
    `powershell -ExecutionPolicy Bypass -File setup_local.ps1` from a
@@ -224,6 +227,10 @@ replacement.
    unit on the cloud path instead.
 5. Re-run `setup_local.ps1 -ChangeCamera` any time you want to point it at
    a different camera IP.
+6. Only one viewer of `/stream` can be connected at a time - close any
+   browser tab left open on `http://<camera-ip>/stream` before starting
+   `setup_local.ps1`, or it will starve the local backend's puller (and
+   vice versa).
 
 ## Things to know
 
