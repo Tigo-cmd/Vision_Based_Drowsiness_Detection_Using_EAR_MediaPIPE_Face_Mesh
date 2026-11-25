@@ -518,6 +518,9 @@ void setup() {
     saved = 1;
   }
 
+  // Load the server URL before setup mode can render the form, so the field is pre-filled.
+  serverBase = wifistore::loadServerUrl(API_BASE);
+
   // Setup mode: double-press RST, hold the button while powering on, or no
   // saved network yet.
   bool doubleReset = wifistore::checkDoubleReset();
@@ -533,7 +536,6 @@ void setup() {
 
 
   tls.setInsecure();  // see the TLS note in Firmware/README.md
-  serverBase = wifistore::loadServerUrl(API_BASE);
   if (!connectSavedWifi()) {
     requestSetupOnNextBoot();
     delay(200);
