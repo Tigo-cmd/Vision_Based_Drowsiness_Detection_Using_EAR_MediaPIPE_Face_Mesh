@@ -59,6 +59,7 @@ unsigned long lastOkMs = 0, lastPollMs = 0, lastOffChirpMs = 0;
 int lastHttpCode = 0;
 
 WiFiClientSecure tls;
+WiFiClient plainClient;  // used instead of tls when serverBase is plain http (e.g. a local backend)
 HTTPClient http;
 String serverBase;  // set in setup() from NVS, falling back to API_BASE
 
@@ -178,9 +179,13 @@ void drawScreen() {
 // ---------------------------------------------------------------------------
 
 void poll() {
-  http.setReuse(true);  // keep the TLS session open between polls
+  http.setReuse(true);  // keep the connection open between polls
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.begin(tls, serverBase + "/alert");
+  if (serverBase.startsWith("https")) {
+    http.begin(tls, serverBase + "/alert");
+  } else {
+    http.begin(plainClient, serverBase + "/alert");
+  }
   int code = http.GET();
   lastHttpCode = code;
   if (code == 200) {
