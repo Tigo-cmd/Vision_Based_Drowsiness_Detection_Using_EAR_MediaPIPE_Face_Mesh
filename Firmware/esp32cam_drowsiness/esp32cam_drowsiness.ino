@@ -20,6 +20,7 @@
 #include <Adafruit_SSD1306.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include "esp_http_server.h"
 
 #include "config.h"
 #include "wifi_store.h"
@@ -276,6 +277,64 @@ void captureAndSend() {
     Serial.printf("[http] %d %s\n", code, http.errorToString(code).c_str());
   }
   http.end();
+}
+
+// ---------------------------------------------------------------------------
+// Local MJPEG stream (runs alongside the push loop above, always on once
+// Wi-Fi and the camera are up - no config flag, no reflash to turn it on or
+// off). Lets a local backend on the same network pull frames directly
+// instead of waiting for this board to push them, cutting out any WAN
+// round-trip for whoever's viewing the /stream URL on the LAN.
+// ---------------------------------------------------------------------------
+
+#define PART_BOUNDARY "dcam-frame-boundary"
+static const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char *STREAM_PART_HEADER = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+httpd_handle_t streamServer = nullptr;
+
+static esp_err_t streamHandler(httpd_req_t *req) {
+  esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  if (res != ESP_OK) return res;
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  char partHeader[64];
+  while (true) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("[stream] capture failed");
+      return ESP_FAIL;
+    }
+    res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+    if (res == ESP_OK) {
+      size_t hlen = snprintf(partHeader, sizeof(partHeader), STREAM_PART_HEADER, fb->len);
+      res = httpd_resp_send_chunk(req, partHeader, hlen);
+    }
+    if (res == ESP_OK) {
+      res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
+    }
+    esp_camera_fb_return(fb);
+    if (res != ESP_OK) return res;  // client disconnected or a send failed
+  }
+}
+
+void startStreamServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  config.ctrl_port = 32768;
+  httpd_uri_t streamUri = {
+    .uri = "/stream",
+    .method = HTTP_GET,
+    .handler = streamHandler,
+    .user_ctx = nullptr
+  };
+  if (httpd_start(&streamServer, &config) == ESP_OK) {
+    httpd_register_uri_handler(streamServer, &streamUri);
+    Serial.println("[stream] serving MJPEG on :80/stream");
+  } else {
+    Serial.println("[stream] failed to start");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +674,7 @@ void setup() {
     delay(200);
     ESP.restart();
   }
+  startStreamServer();
   chirpRequest = true;  // audible "I'm alive"
 }
 
